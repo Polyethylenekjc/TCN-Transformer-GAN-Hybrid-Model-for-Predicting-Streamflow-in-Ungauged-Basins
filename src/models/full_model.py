@@ -44,14 +44,22 @@ class ForecastingModel(nn.Module):
     """
     def __init__(self, 
                  input_channels,
-                 d_model=64,  # 修改为64保持一致性
-                 tcn_dilations=[1, 2, 4, 8],
-                 transformer_num_heads=8,
-                 transformer_num_layers=4,
+                 input_height=32,
+                 input_width=32,
+                 output_height=128,
+                 output_width=128,
+                 d_model=64,
+                 tcn_dilations=[1, 2],
+                 transformer_num_heads=4,
+                 transformer_num_layers=2,
                  diffusion_time_steps=1000):
         """
         Args:
             input_channels: 输入多通道图像的通道数
+            input_height: 输入图像高度
+            input_width: 输入图像宽度
+            output_height: 输出图像高度
+            output_width: 输出图像宽度
             d_model: 特征维度
             tcn_dilations: TCN膨胀系数
             transformer_num_heads: Transformer注意力头数
@@ -60,15 +68,21 @@ class ForecastingModel(nn.Module):
         """
         super(ForecastingModel, self).__init__()
         
+        # 存储尺寸信息
+        self.input_height = input_height
+        self.input_width = input_width
+        self.output_height = output_height
+        self.output_width = output_width
+        
         # 组件初始化
-        self.spatial_encoder = SpatialEncoder(input_channels, d_model=d_model)
+        self.spatial_encoder = SpatialEncoder(input_channels, d_model=d_model, downsample_steps=2)
         self.temporal_encoder = TemporalTCN(d_model, dilations=tcn_dilations)
         self.transformer_encoder = TransformerEncoder(
             d_model=d_model, 
             num_heads=transformer_num_heads, 
             num_layers=transformer_num_layers,
-            hidden_dim=4*d_model,  # 修复hidden_dim
-            max_seq_length=256  # 根据实际特征图大小调整
+            hidden_dim=2*d_model,
+            max_seq_length=256
         )
         self.diffusion_decoder = ConditionalUNet(
             in_channels=1, 
@@ -93,19 +107,13 @@ class ForecastingModel(nn.Module):
             条件编码，形状为 (B, d_model, H', W')
         """
         # 空间编码
-        start_time = time.time()
         spatial_features = self.spatial_encoder(x_seq)  # (B, T, d_model, H', W')
-        print(f"Spatial encoding took {time.time() - start_time:.4f} seconds")
         
         # 时序编码
-        start_time = time.time()
         temporal_features = self.temporal_encoder(spatial_features)  # (B, d_model, H', W')
-        print(f"Temporal encoding took {time.time() - start_time:.4f} seconds")
         
         # Transformer全局上下文建模
-        start_time = time.time()
         cond_features = self.transformer_encoder(temporal_features)  # (B, d_model, H', W')
-        print(f"Transformer encoding took {time.time() - start_time:.4f} seconds")
         
         return cond_features
     
@@ -123,6 +131,9 @@ class ForecastingModel(nn.Module):
         """
         # 获取条件编码
         cond = self.forward_frame_prediction(x_seq)  # (B, d_model, H', W')
+        
+        # 确保y_gt在正确的设备上
+        y_gt = y_gt.to(cond.device)
         
         # 随机采样时间步
         if timestep is None:
@@ -152,34 +163,31 @@ class ForecastingModel(nn.Module):
         Returns:
             生成的图像，形状为 (B, 1, H_out, W_out)
         """
-        print(f"Starting sampling with {num_steps} steps")
         # 获取条件编码
-        start_time = time.time()
         cond = self.forward_frame_prediction(x_seq)  # (B, d_model, H', W')
-        print(f"Condition encoding took {time.time() - start_time:.4f} seconds")
         
         # 初始化
         batch_size = x_seq.shape[0]
-        # 使用输入尺寸的4倍作为输出尺寸
-        image_shape = (batch_size, 1, x_seq.shape[-2]*4, x_seq.shape[-1]*4)  
-        x = torch.randn(image_shape, device=x_seq.device)
-        print(f"Initialized random image with shape: {image_shape}")
+        # 使用配置的输出尺寸
+        image_shape = (batch_size, 1, self.output_height, self.output_width)
+        x = torch.randn(image_shape, device=cond.device)
         
         # 逐步去噪
         for t in reversed(range(0, num_steps)):
-            print(f"Processing denoising step {num_steps - t}/{num_steps}")
+
+            
             # 计算当前时间步
-            timestep = torch.full((batch_size,), t, device=x_seq.device, dtype=torch.long)
+            timestep = torch.full((batch_size,), t, device=cond.device, dtype=torch.long)
             
             # 预测噪声
-            start_time = time.time()
             predicted_noise = self.diffusion_decoder(x, timestep, cond)
-            print(f"  Noise prediction took {time.time() - start_time:.4f} seconds")
             
             # 更新图像
-            start_time = time.time()
             x = self._denoise_step(x, predicted_noise, timestep, image_shape)
-            print(f"  Denoising step took {time.time() - start_time:.4f} seconds")
+            
+        # 确保输出尺寸正确
+        if x.shape[2] != self.output_height or x.shape[3] != self.output_width:
+            x = F.interpolate(x, size=(self.output_height, self.output_width), mode='bilinear', align_corners=True)
             
         return x
 
@@ -187,7 +195,7 @@ class ForecastingModel(nn.Module):
         """
         单步去噪过程 - 使用标准DDPM公式
         """
-        # 确保预测噪声与x具有相同的形状
+        # 调整噪声张量大小
         if predicted_noise.shape != x.shape:
             predicted_noise = F.interpolate(predicted_noise, size=x.shape[2:], mode='bilinear', align_corners=True)
         
@@ -197,34 +205,33 @@ class ForecastingModel(nn.Module):
         alpha_t = self._alphas[t]
         alpha_cumprod_t = self._alphas_cumprod[t]
         
-        # 计算方差项（用于添加噪声）
-        if t > 0:
-            alpha_cumprod_prev = self._alphas_cumprod[t-1]
-            posterior_variance = beta_t * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod_t)
-        else:
-            posterior_variance = torch.zeros_like(beta_t)
+        # 计算后验方差
+        posterior_variance = torch.zeros_like(beta_t) if t == 0 else \
+            beta_t * (1. - self._alphas_cumprod[t-1]) / (1. - alpha_cumprod_t)
         
-        # 核心DDPM去噪公式
-        pred_x_start = (x - torch.sqrt(1. - alpha_cumprod_t) * predicted_noise) / torch.sqrt(alpha_cumprod_t)
-        pred_x_start = torch.clamp(pred_x_start, -1., 1.)
-        
+        # 计算均值
         coeff1 = 1. / torch.sqrt(alpha_t)
         coeff2 = (1. - alpha_t) / torch.sqrt(1. - alpha_cumprod_t)
         mean = coeff1 * (x - coeff2 * predicted_noise)
         
-        if t > 0:
-            noise = torch.randn_like(x)
-            return mean + torch.sqrt(posterior_variance) * noise
-        else:
-            return mean
+        # 添加噪声（最后一层除外）
+        result = mean if t == 0 else mean + torch.sqrt(posterior_variance) * torch.randn_like(x)
+            
+        # 调整输出尺寸
+        if result.shape[2] != target_shape[2] or result.shape[3] != target_shape[3]:
+            result = F.interpolate(result, size=(target_shape[2], target_shape[3]), mode='bilinear', align_corners=True)
+            
+        return result
 
     def _extract_coefficient(self, coefficient_array, t, x_shape):
         """
         从系数数组中提取指定时间步的系数
         """
         batch_size = t.shape[0]
-        out = coefficient_array.gather(-1, t.cpu())
-        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
+        # 确保系数数组在正确的设备上
+        coefficient_array = coefficient_array.to(t.device)
+        out = coefficient_array.gather(-1, t)
+        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
 
     def _precompute_coefficients(self):
         """

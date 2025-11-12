@@ -103,7 +103,7 @@ class TransformerEncoder(nn.Module):
     Transformer编码器
     将时序后的特征做 patch/flatten 后输入 Transformer
     """
-    def __init__(self, d_model=64, num_heads=8, num_layers=4, hidden_dim=256, max_seq_length=1024):  # 修改默认参数
+    def __init__(self, d_model=64, num_heads=4, num_layers=2, hidden_dim=128, max_seq_length=256):
         """
         Args:
             d_model: 特征维度

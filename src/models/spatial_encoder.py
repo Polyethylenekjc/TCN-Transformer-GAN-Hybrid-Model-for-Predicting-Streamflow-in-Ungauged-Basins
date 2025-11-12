@@ -35,7 +35,7 @@ class SpatialEncoder(nn.Module):
     空间特征提取器 (Shared CNN)
     对每天的多通道图像做同一套轻量 CNN 编码，得到每帧的低维空间特征图
     """
-    def __init__(self, input_channels, d_model=64, downsample_steps=0):
+    def __init__(self, input_channels, d_model=64, downsample_steps=2):
         """
         Args:
             input_channels: 输入图像的通道数

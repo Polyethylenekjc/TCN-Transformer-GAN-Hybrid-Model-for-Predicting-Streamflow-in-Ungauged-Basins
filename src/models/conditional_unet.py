@@ -84,7 +84,7 @@ class ConditionalUNet(nn.Module):
     """
     条件扩散模型 (Conditional DDPM/UNet)
     """
-    def __init__(self, in_channels=1, out_channels=1, time_emb_dim=32, d_model=128):
+    def __init__(self, in_channels=1, out_channels=1, time_emb_dim=16, d_model=64):
         """
         Args:
             in_channels: 输入通道数（通常是噪声图像）
@@ -103,44 +103,23 @@ class ConditionalUNet(nn.Module):
         
         # 条件编码适配器（用于将Transformer输出适配到不同分辨率）
         self.cond_adapters = nn.ModuleList([
-            nn.Conv2d(d_model, 64, 1),   # 适配到第一层
-            nn.Conv2d(d_model, 128, 1),  # 适配到第二层
-            nn.Conv2d(d_model, 256, 1),  # 适配到第三层
-            nn.Conv2d(d_model, 512, 1),  # 适配到第四层
+            nn.Conv2d(d_model, 16, 1),   # 适配到第一层
+            nn.Conv2d(d_model, 32, 1),   # 适配到第二层
         ])
         
-        # 下采样路径
-        self.down1 = DownBlock(in_channels, 64, time_emb_dim)
-        self.down2 = DownBlock(64, 128, time_emb_dim)
-        self.down3 = DownBlock(128, 256, time_emb_dim)
-        self.down4 = DownBlock(256, 512, time_emb_dim)
+        # 下采样路径 (进一步减少层数和通道数)
+        self.down1 = DownBlock(in_channels, 16, time_emb_dim)
+        self.down2 = DownBlock(16, 32, time_emb_dim)
         
         # 中间块
-        self.bottleneck = Block(512, 512, time_emb_dim)
+        self.bottleneck = Block(32, 32, time_emb_dim)
         
         # 上采样路径
-        self.up1 = UpBlock(512 + 512, 256, time_emb_dim)
-        self.up2 = UpBlock(256 + 256, 128, time_emb_dim)
-        self.up3 = UpBlock(128 + 128, 64, time_emb_dim)
-        self.up4 = UpBlock(64 + 64, 64, time_emb_dim)
+        self.up1 = UpBlock(32 + 32, 32, time_emb_dim)
+        self.up2 = UpBlock(32 + 16, 16, time_emb_dim)
         
         # 输出层
-        self.output = nn.Conv2d(64, out_channels, 1)
-        
-        # 条件注入（FiLM方式）
-        self.film_scales = nn.ModuleList([
-            nn.Linear(d_model, 64),
-            nn.Linear(d_model, 128),
-            nn.Linear(d_model, 256),
-            nn.Linear(d_model, 512),
-        ])
-        
-        self.film_shifts = nn.ModuleList([
-            nn.Linear(d_model, 64),
-            nn.Linear(d_model, 128),
-            nn.Linear(d_model, 256),
-            nn.Linear(d_model, 512),
-        ])
+        self.output = nn.Conv2d(16, out_channels, 1)
 
     def forward(self, x, timestep, cond):
         """
@@ -152,21 +131,26 @@ class ConditionalUNet(nn.Module):
         Returns:
             噪声预测，形状为 (B, 1, H_out, W_out)
         """
+        # 记录原始输入尺寸
+        orig_size = x.shape[2:]
+        
         # 时间嵌入
         t = self.time_mlp(timestep)
+        
+        # 适配条件编码到不同分辨率
+        cond1 = self.cond_adapters[0](cond)  # 适配到第一层分辨率
+        cond2 = self.cond_adapters[1](cond)  # 适配到第二层分辨率
         
         # 下采样过程
         skips = []
         x, skip = self.down1(x, t)
+        # 添加条件信息到skip连接
+        skip = skip + F.interpolate(cond1, size=skip.shape[2:], mode='bilinear', align_corners=True)
         skips.append(skip)
         
         x, skip = self.down2(x, t)
-        skips.append(skip)
-        
-        x, skip = self.down3(x, t)
-        skips.append(skip)
-        
-        x, skip = self.down4(x, t)
+        # 添加条件信息到skip连接
+        skip = skip + F.interpolate(cond2, size=skip.shape[2:], mode='bilinear', align_corners=True)
         skips.append(skip)
         
         # 中间块
@@ -175,9 +159,12 @@ class ConditionalUNet(nn.Module):
         # 上采样过程
         x = self.up1(x, skips[-1], t)
         x = self.up2(x, skips[-2], t)
-        x = self.up3(x, skips[-3], t)
-        x = self.up4(x, skips[-4], t)
         
         # 输出
         output = self.output(x)
+        
+        # 确保输出尺寸与原始输入尺寸一致
+        if output.shape[2:] != orig_size:
+            output = F.interpolate(output, size=orig_size, mode='bilinear', align_corners=True)
+            
         return output

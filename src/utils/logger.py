@@ -7,13 +7,14 @@ from datetime import datetime
 from rich.logging import RichHandler
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+import glob
 
 
 class ModelLogger:
     """
     模型训练日志记录器
     """
-    def __init__(self, name, log_dir='./logs', level=logging.INFO):
+    def __init__(self, name, log_dir='./logs', level=logging.INFO, max_log_files=10):
         """
         初始化日志记录器
         
@@ -21,6 +22,7 @@ class ModelLogger:
             name: 日志记录器名称
             log_dir: 日志文件目录
             level: 日志级别
+            max_log_files: 最大日志文件数量
         """
         self.logger = logging.getLogger(name)
         self.logger.setLevel(level)
@@ -30,6 +32,9 @@ class ModelLogger:
         
         # 创建日志目录
         os.makedirs(log_dir, exist_ok=True)
+        
+        # 清理多余的日志文件，只保留最近的max_log_files个
+        self._cleanup_old_logs(log_dir, max_log_files)
         
         # 文件处理器 - 使用指定的时间格式
         file_handler = logging.FileHandler(os.path.join(log_dir, f'{name}_{datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}.log'))
@@ -52,6 +57,30 @@ class ModelLogger:
         
         # 创建控制台实例用于彩色输出
         self.console = Console()
+    
+    def _cleanup_old_logs(self, log_dir, max_log_files):
+        """
+        清理旧的日志文件，只保留最近的max_log_files个
+        
+        Args:
+            log_dir: 日志目录
+            max_log_files: 最大日志文件数量
+        """
+        # 获取所有日志文件
+        log_files = glob.glob(os.path.join(log_dir, f'*.*.log'))
+        
+        # 按修改时间排序
+        log_files.sort(key=os.path.getmtime)
+        
+        # 删除多余的日志文件
+        if len(log_files) > max_log_files:
+            files_to_delete = log_files[:len(log_files) - max_log_files]
+            for file_path in files_to_delete:
+                try:
+                    os.remove(file_path)
+                    print(f"Deleted old log file: {file_path}")
+                except OSError as e:
+                    print(f"Error deleting log file {file_path}: {e}")
     
     def info(self, message):
         """记录INFO级别日志"""
@@ -112,7 +141,7 @@ class ModelLogger:
             self.info(f"  [green]{key}[/green]: {value}")
 
 
-def create_logger(name, log_dir='./logs', level=logging.INFO):
+def create_logger(name, log_dir='./logs', level=logging.INFO, max_log_files=10):
     """
     创建日志记录器的便捷函数
     
@@ -120,8 +149,9 @@ def create_logger(name, log_dir='./logs', level=logging.INFO):
         name: 日志记录器名称
         log_dir: 日志文件目录
         level: 日志级别
+        max_log_files: 最大日志文件数量
         
     Returns:
         ModelLogger实例
     """
-    return ModelLogger(name, log_dir, level)
+    return ModelLogger(name, log_dir, level, max_log_files)

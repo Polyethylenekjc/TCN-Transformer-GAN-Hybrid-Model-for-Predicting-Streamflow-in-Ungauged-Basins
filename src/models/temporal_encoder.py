@@ -52,7 +52,7 @@ class TemporalTCN(nn.Module):
     时序编码器 (TCN)
     对每个空间位置的时序做 TCN（1D causal/dilated conv）
     """
-    def __init__(self, d_model, num_channels=[64, 64, 64, 64], kernel_size=3, dilations=[1, 2, 4, 8]):
+    def __init__(self, d_model, num_channels=[64, 64], kernel_size=3, dilations=[1, 2]):
         """
         Args:
             d_model: 输入特征维度

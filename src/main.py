@@ -49,7 +49,7 @@ def main():
     args = parser.parse_args()
     
     # 创建日志记录器
-    logger = create_logger('main')
+    logger = create_logger('main', max_log_files=10)
     
     # 加载配置文件
     logger.info(f"[bold blue]Loading config from {args.config}...[/bold blue]")
@@ -64,6 +64,10 @@ def main():
     logger.info("[bold blue]Creating model...[/bold blue]")
     model = ForecastingModel(
         input_channels=config['input_channels'],
+        input_height=config['input_height'],
+        input_width=config['input_width'],
+        output_height=config['output_height'],
+        output_width=config['output_width'],
         d_model=config['d_model'],
         tcn_dilations=config['tcn_dilations'],
         transformer_num_heads=config['transformer_num_heads'],
