@@ -6,6 +6,7 @@ from .spatial_encoder import SpatialEncoder
 from .temporal_encoder import TemporalTCN
 from .transformer_encoder import TransformerEncoder
 from .conditional_unet import ConditionalUNet
+import time
 
 
 def initialize_model(model):
@@ -92,13 +93,19 @@ class ForecastingModel(nn.Module):
             条件编码，形状为 (B, d_model, H', W')
         """
         # 空间编码
+        start_time = time.time()
         spatial_features = self.spatial_encoder(x_seq)  # (B, T, d_model, H', W')
+        print(f"Spatial encoding took {time.time() - start_time:.4f} seconds")
         
         # 时序编码
+        start_time = time.time()
         temporal_features = self.temporal_encoder(spatial_features)  # (B, d_model, H', W')
+        print(f"Temporal encoding took {time.time() - start_time:.4f} seconds")
         
         # Transformer全局上下文建模
+        start_time = time.time()
         cond_features = self.transformer_encoder(temporal_features)  # (B, d_model, H', W')
+        print(f"Transformer encoding took {time.time() - start_time:.4f} seconds")
         
         return cond_features
     
@@ -145,41 +152,71 @@ class ForecastingModel(nn.Module):
         Returns:
             生成的图像，形状为 (B, 1, H_out, W_out)
         """
+        print(f"Starting sampling with {num_steps} steps")
         # 获取条件编码
+        start_time = time.time()
         cond = self.forward_frame_prediction(x_seq)  # (B, d_model, H', W')
+        print(f"Condition encoding took {time.time() - start_time:.4f} seconds")
         
         # 初始化
         batch_size = x_seq.shape[0]
         # 使用输入尺寸的4倍作为输出尺寸
         image_shape = (batch_size, 1, x_seq.shape[-2]*4, x_seq.shape[-1]*4)  
         x = torch.randn(image_shape, device=x_seq.device)
+        print(f"Initialized random image with shape: {image_shape}")
         
         # 逐步去噪
         for t in reversed(range(0, num_steps)):
+            print(f"Processing denoising step {num_steps - t}/{num_steps}")
             # 计算当前时间步
             timestep = torch.full((batch_size,), t, device=x_seq.device, dtype=torch.long)
             
             # 预测噪声
+            start_time = time.time()
             predicted_noise = self.diffusion_decoder(x, timestep, cond)
+            print(f"  Noise prediction took {time.time() - start_time:.4f} seconds")
             
             # 更新图像
+            start_time = time.time()
             x = self._denoise_step(x, predicted_noise, timestep, image_shape)
+            print(f"  Denoising step took {time.time() - start_time:.4f} seconds")
             
         return x
 
     def _denoise_step(self, x, predicted_noise, timestep, target_shape):
         """
-        单步去噪过程
-        这里为了简化实现，采用基础的DDPM采样方法
+        单步去噪过程 - 使用标准DDPM公式
         """
         # 确保预测噪声与x具有相同的形状
         if predicted_noise.shape != x.shape:
-            # 如果形状不匹配，调整predicted_noise的形状
             predicted_noise = F.interpolate(predicted_noise, size=x.shape[2:], mode='bilinear', align_corners=True)
         
-        # 这是一个简化的采样实现
-        # 实际应用中可能需要更复杂的调度算法如DDIM
-        return x - 0.1 * predicted_noise  # 简化版本
+        # 获取当前时间步的系数
+        t = timestep[0].item()
+        beta_t = self._betas[t]
+        alpha_t = self._alphas[t]
+        alpha_cumprod_t = self._alphas_cumprod[t]
+        
+        # 计算方差项（用于添加噪声）
+        if t > 0:
+            alpha_cumprod_prev = self._alphas_cumprod[t-1]
+            posterior_variance = beta_t * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod_t)
+        else:
+            posterior_variance = torch.zeros_like(beta_t)
+        
+        # 核心DDPM去噪公式
+        pred_x_start = (x - torch.sqrt(1. - alpha_cumprod_t) * predicted_noise) / torch.sqrt(alpha_cumprod_t)
+        pred_x_start = torch.clamp(pred_x_start, -1., 1.)
+        
+        coeff1 = 1. / torch.sqrt(alpha_t)
+        coeff2 = (1. - alpha_t) / torch.sqrt(1. - alpha_cumprod_t)
+        mean = coeff1 * (x - coeff2 * predicted_noise)
+        
+        if t > 0:
+            noise = torch.randn_like(x)
+            return mean + torch.sqrt(posterior_variance) * noise
+        else:
+            return mean
 
     def _extract_coefficient(self, coefficient_array, t, x_shape):
         """
@@ -198,6 +235,9 @@ class ForecastingModel(nn.Module):
         alphas = 1.0 - betas
         alphas_cumprod = torch.cumprod(alphas, axis=0)
         
+        self.register_buffer('_betas', betas)
+        self.register_buffer('_alphas', alphas)
+        self.register_buffer('_alphas_cumprod', alphas_cumprod)
         self.register_buffer('_sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('_sqrt_one_minus_alphas_cumprod', torch.sqrt(1. - alphas_cumprod))
 

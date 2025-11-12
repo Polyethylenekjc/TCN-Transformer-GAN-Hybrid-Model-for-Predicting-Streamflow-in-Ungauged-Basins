@@ -8,7 +8,8 @@ import yaml
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 from models.full_model import ForecastingModel, initialize_model
-from train.trainer import create_trainer
+from train.trainer import create_trainer, Trainer
+from utils.logger import create_logger
 
 
 def load_config(config_path):
@@ -47,17 +48,20 @@ def main():
     
     args = parser.parse_args()
     
+    # 创建日志记录器
+    logger = create_logger('main')
+    
     # 加载配置文件
-    print(f"Loading config from {args.config}...")
+    logger.info(f"[bold blue]Loading config from {args.config}...[/bold blue]")
     config = load_config(args.config)
     
     # 确保设备设置正确
     if config['device'] == 'cuda' and not torch.cuda.is_available():
-        print("CUDA not available, falling back to CPU")
+        logger.warning("[bold yellow]CUDA not available, falling back to CPU[/bold yellow]")
         config['device'] = 'cpu'
     
     # 创建模型
-    print("Creating model...")
+    logger.info("[bold blue]Creating model...[/bold blue]")
     model = ForecastingModel(
         input_channels=config['input_channels'],
         d_model=config['d_model'],
@@ -68,31 +72,36 @@ def main():
     )
     
     model = initialize_model(model)
-    print(f"Model created. Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.log_model_info(model)
     
     # 根据模式执行不同操作
     if args.mode == 'train':
-        print("Starting training mode...")
+        logger.info("[bold blue]Starting training mode...[/bold blue]")
         # 这里应该加载数据并开始训练
         # trainer = create_trainer(config)
         # trainer.train(config['epochs'])
-        print("Training would start here...")
+        logger.info("[bold green]Training would start here...[/bold green]")
         
     elif args.mode == 'sample':
-        print("Starting sampling mode...")
+        logger.info("[bold blue]Starting sampling mode...[/bold blue]")
         # 示例采样过程
         model.eval()
+        model = model.to(config['device'])  # 确保模型在正确的设备上
+        logger.info(f"[cyan]Model moved to device: {config['device']}[/cyan]")
         with torch.no_grad():
             # 创建示例输入 - 根据配置调整尺寸
+            logger.info("[bold blue]Creating sample input tensor...[/bold blue]")
             x_seq = torch.randn(1, config['sequence_length'], config['input_channels'], 
                                config['input_height'], config['input_width'])  # (B, T, C, H, W)
-            print(f"Input sequence shape: {x_seq.shape}")
+            x_seq = x_seq.to(config['device'])  # 确保输入在正确的设备上
+            logger.log_data_shape(x_seq, "Input sequence")
             
             # 采样生成
+            logger.info("[bold blue]Starting model sampling...[/bold blue]")
             generated = model(x_seq, mode='sample')
-            print(f"Generated image shape: {generated.shape}")
+            logger.log_data_shape(generated, "Generated image")
             
-    print("Process completed.")
+    logger.info("[bold green]Process completed.[/bold green]")
 
 
 if __name__ == "__main__":
