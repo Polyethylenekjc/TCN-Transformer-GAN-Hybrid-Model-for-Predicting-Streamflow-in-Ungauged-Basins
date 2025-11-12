@@ -97,12 +97,22 @@ class InferencePipeline:
         model = initialize_model(model)
         
         # 加载检查点
-        if self.checkpoint_path and os.path.exists(self.checkpoint_path):
+        if self.checkpoint_path and os.path.exists(self.checkpoint_path) and not os.path.isdir(self.checkpoint_path):
             self.logger.info(f"[bold blue]Loading checkpoint from {self.checkpoint_path}...[/bold blue]")
-            checkpoint = torch.load(self.checkpoint_path, map_location='cpu')
-            model.load_state_dict(checkpoint['model_state_dict'])
+            try:
+                checkpoint = torch.load(self.checkpoint_path, map_location='cpu')
+                if 'model_state_dict' in checkpoint:
+                    model.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    model.load_state_dict(checkpoint)
+                self.logger.info("[green]Checkpoint loaded successfully[/green]")
+            except Exception as e:
+                self.logger.warning(f"[bold yellow]Failed to load checkpoint: {str(e)}, using initialized model[/bold yellow]")
         else:
-            self.logger.warning("[bold yellow]No checkpoint provided or checkpoint not found, using initialized model[/bold yellow]")
+            if self.checkpoint_path:
+                self.logger.warning(f"[bold yellow]Checkpoint path {self.checkpoint_path} is invalid or not found, using initialized model[/bold yellow]")
+            else:
+                self.logger.info("[cyan]No checkpoint provided, using initialized model[/cyan]")
             
         model = model.to(self.config['device'])
         model.eval()
@@ -117,6 +127,7 @@ class InferencePipeline:
         """
         # 这里我们简单地创建一些虚拟统计数据
         # 在实际应用中，应该从训练集计算这些统计数据
+        # 对于输入数据，通道数为input_channels
         self.preprocessor.stats['mean'] = torch.zeros(self.config['input_channels'])
         self.preprocessor.stats['std'] = torch.ones(self.config['input_channels'])
 
@@ -187,11 +198,15 @@ class InferencePipeline:
             # 模型预测
             self.logger.info("[bold blue]Running model prediction...[/bold blue]")
             with torch.no_grad():
-                generated = self.model.sample(x_seq_normalized, device=self.config['device'])
+                generated = self.model.sample(x_seq_normalized)
                 
             # 反归一化结果
             self.logger.info("[bold blue]Denormalizing results...[/bold blue]")
-            generated_denormalized = self.preprocessor.denormalize(generated, channel_axis=1)  # (B, 1, H, W)
+            # 创建输出数据的预处理器和统计数据
+            output_preprocessor = DataPreprocessor(normalize_method='z_score')
+            output_preprocessor.stats['mean'] = torch.zeros(1)  # 只有一个通道
+            output_preprocessor.stats['std'] = torch.ones(1)    # 只有一个通道
+            generated_denormalized = output_preprocessor.denormalize(generated, channel_axis=1)  # (B, 1, H, W)
             
             # 保存结果
             self._save_results(generated_denormalized)
@@ -233,7 +248,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Run inference pipeline')
     parser.add_argument('--config', type=str, required=True, help='配置文件路径')
-    parser.add_argument('--checkpoint', type=str, required=True, help='模型检查点路径')
+    parser.add_argument('--checkpoint', type=str, default=None, help='模型检查点路径')
     parser.add_argument('--input-dir', type=str, required=True, help='输入图像目录')
     parser.add_argument('--stations-csv', type=str, required=True, help='站点CSV文件路径')
     parser.add_argument('--output-dir', type=str, required=True, help='输出结果目录')

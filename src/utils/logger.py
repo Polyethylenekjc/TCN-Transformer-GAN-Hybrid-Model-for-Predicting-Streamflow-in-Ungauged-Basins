@@ -5,8 +5,7 @@ from torchsummary import summary
 import torch
 from datetime import datetime
 from rich.logging import RichHandler
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from tqdm import tqdm
 import glob
 
 
@@ -54,9 +53,6 @@ class ModelLogger:
         # 添加处理器到日志记录器
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
-        
-        # 创建控制台实例用于彩色输出
-        self.console = Console()
     
     def _cleanup_old_logs(self, log_dir, max_log_files):
         """
@@ -139,6 +135,7 @@ class ModelLogger:
         self.info("[bold magenta]Configuration:[/bold magenta]")
         for key, value in config.items():
             self.info(f"  [green]{key}[/green]: {value}")
+            
 
 
 def create_logger(name, log_dir='./logs', level=logging.INFO, max_log_files=10):

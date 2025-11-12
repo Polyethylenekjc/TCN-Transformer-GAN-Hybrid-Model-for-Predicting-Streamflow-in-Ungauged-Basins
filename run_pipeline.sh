@@ -4,7 +4,7 @@
 
 # 设置参数
 CONFIG_FILE="configs/low_memory.yaml"
-CHECKPOINT_FILE=""  # 如果有的话，请填写模型检查点路径
+CHECKPOINT_FILE=""  # 不提供检查点文件，使用初始化的模型
 INPUT_DIR="./data/input_images"
 STATIONS_CSV="./data/stations.csv"
 OUTPUT_DIR="./results"
@@ -27,13 +27,14 @@ np.save('$INPUT_DIR/sample_input.npy', data)
 print('Created sample input data:', data.shape)
 "
 
-# 运行推理管线
-python -m src.main \
-    --mode pipeline \
-    --config $CONFIG_FILE \
-    --checkpoint $CHECKPOINT_FILE \
-    --input-dir $INPUT_DIR \
-    --stations-csv $STATIONS_CSV \
-    --output-dir $OUTPUT_DIR
+# 构建命令参数
+CMD="python -m src.main --mode pipeline --config $CONFIG_FILE"
+if [ -n "$CHECKPOINT_FILE" ]; then
+    CMD="$CMD --checkpoint $CHECKPOINT_FILE"
+fi
+CMD="$CMD --input-dir $INPUT_DIR --stations-csv $STATIONS_CSV --output-dir $OUTPUT_DIR"
+
+# 执行命令
+eval $CMD
 
 echo "Pipeline execution completed. Results saved to $OUTPUT_DIR"

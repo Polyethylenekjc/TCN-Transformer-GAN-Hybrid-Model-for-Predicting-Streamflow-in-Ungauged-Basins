@@ -8,7 +8,7 @@ import yaml
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 from models.full_model import ForecastingModel, initialize_model
-from train.trainer import create_trainer, Trainer
+from train.trainer import create_trainer
 from utils.logger import create_logger
 
 
@@ -66,34 +66,47 @@ def main():
         logger.warning("[bold yellow]CUDA not available, falling back to CPU[/bold yellow]")
         config['device'] = 'cpu'
     
-    # 创建模型
-    logger.info("[bold blue]Creating model...[/bold blue]")
-    model = ForecastingModel(
-        input_channels=config['input_channels'],
-        input_height=config['input_height'],
-        input_width=config['input_width'],
-        output_height=config['output_height'],
-        output_width=config['output_width'],
-        d_model=config['d_model'],
-        tcn_dilations=config['tcn_dilations'],
-        transformer_num_heads=config['transformer_num_heads'],
-        transformer_num_layers=config['transformer_num_layers'],
-        diffusion_time_steps=config['diffusion_time_steps']
-    )
-    
-    model = initialize_model(model)
-    logger.log_model_info(model)
-    
     # 根据模式执行不同操作
     if args.mode == 'train':
         logger.info("[bold blue]Starting training mode...[/bold blue]")
-        # 这里应该加载数据并开始训练
-        # trainer = create_trainer(config)
-        # trainer.train(config['epochs'])
-        logger.info("[bold green]Training would start here...[/bold green]")
+        # 创建训练器并开始训练
+        trainer = create_trainer(config)
+        
+        # 如果提供了检查点路径，则加载检查点
+        if args.checkpoint and os.path.exists(args.checkpoint):
+            trainer.load_checkpoint(args.checkpoint)
+            
+        # 开始训练
+        trainer.train(config['epochs'])
         
     elif args.mode == 'sample':
         logger.info("[bold blue]Starting sampling mode...[/bold blue]")
+        # 创建模型
+        model = ForecastingModel(
+            input_channels=config['input_channels'],
+            input_height=config['input_height'],
+            input_width=config['input_width'],
+            output_height=config['output_height'],
+            output_width=config['output_width'],
+            d_model=config['d_model'],
+            tcn_dilations=config['tcn_dilations'],
+            transformer_num_heads=config['transformer_num_heads'],
+            transformer_num_layers=config['transformer_num_layers'],
+            diffusion_time_steps=config['diffusion_time_steps']
+        )
+        
+        model = initialize_model(model)
+        logger.log_model_info(model)
+        
+        # 如果提供了检查点路径，则加载检查点
+        if args.checkpoint and os.path.exists(args.checkpoint):
+            checkpoint = torch.load(args.checkpoint, map_location='cpu')
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+            logger.info("[green]Checkpoint loaded successfully[/green]")
+        
         # 示例采样过程
         model.eval()
         model = model.to(config['device'])  # 确保模型在正确的设备上
@@ -108,7 +121,7 @@ def main():
             
             # 生成预测结果
             logger.info("[bold blue]Generating predictions...[/bold blue]")
-            generated = model.sample(x_seq, device=config['device'])
+            generated = model.sample(x_seq)
             logger.log_data_shape(generated, "Generated output")
             
             logger.info("[bold green]Sampling completed successfully![/bold green]")
