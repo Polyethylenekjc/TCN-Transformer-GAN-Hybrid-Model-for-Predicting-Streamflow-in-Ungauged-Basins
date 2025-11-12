@@ -1,15 +1,15 @@
-# 多通道图像序列预测高分辨率单通道图像系统
+# TCN-Transformer-Diffusion-Hybrid-Model-for-Predicting-Streamflow-in-Ungauged-Basins
 
-本项目实现了一个完整的解决方案，用于使用15天的多通道图像序列预测第16天的高分辨率单通道图像。
+本项目实现了一个混合模型，用于在无测量流域(Ungauged Basins)中进行精确的径流预测。
 
 ## 架构设计
 
 系统采用以下架构：
 
-1. **Spatial CNN**: 对每天的多通道图像做同一套轻量CNN编码
-2. **Temporal TCN**: 使用TCN学习时间序列变化规律
-3. **Global Transformer**: 使用Transformer学习全局上下文依赖
-4. **Conditional DDPM/UNet**: 条件扩散模型生成高分辨率图像
+1. **Spatial CNN**: 提取流域的空间特征（如地形、土壤类型、土地利用等）
+2. **Temporal TCN**: 使用TCN学习径流的时间序列变化规律
+3. **Global Transformer**: 使用Transformer学习不同流域间的全局上下文依赖
+4. **Conditional DDPM/UNet**: 条件扩散模型生成目标流域的径流预测
 
 ## 项目结构
 
@@ -34,22 +34,22 @@ src/
 ## 核心组件说明
 
 ### 1. Spatial Encoder (CNN)
-对每天的多通道图像进行特征提取，输出低维空间特征图。
+对每个流域的空间特征图（如DEM、土壤类型、植被覆盖等）进行特征提取。
 
 ### 2. Temporal TCN
-使用因果膨胀卷积处理时间序列，捕获局部与中期依赖。
+使用因果膨胀卷积处理气象强迫数据（降水、温度等）的时间序列，捕获短期和中期依赖关系。
 
 ### 3. Transformer Encoder
-学习跨空间的大尺度依赖和注意力权重。
+学习跨流域的大尺度空间依赖和注意力权重，实现知识从有测量流域到无测量流域的迁移。
 
 ### 4. Conditional UNet for Diffusion
-基于条件的扩散模型生成高分辨率图像。
+基于条件的扩散模型生成连续且准确的径流时间序列。
 
 ## 使用方法
 
 ### 安装依赖
 ```bash
-pip install torch torchvision tqdm scikit-image
+pip install torch torchvision tqdm numpy pandas
 ```
 
 ### 训练模型
@@ -57,7 +57,7 @@ pip install torch torchvision tqdm scikit-image
 python src/main.py --mode train
 ```
 
-### 生成样本
+### 生成预测
 ```bash
 python src/main.py --mode sample
 ```
@@ -75,37 +75,38 @@ python src/main.py --mode sample
 ## 损失函数
 
 1. **扩散损失**: MSE between true noise and predicted noise
-2. **像素损失** (可选): L1 损失
-3. **感知损失** (可选): VGG感知损失或SSIM损失
+2. **径流预测损失**: NSE（Nash-Sutcliffe Efficiency）或KGE（Kling-Gupta Efficiency）
+3. **区域适应损失**: 用于减少源流域和目标流域之间的特征分布差异
 
-总损失: L = L_diff + λ_pix*L_pix + λ_perc*L_perc
+总损失: L = L_diff + λ_pred*L_pred + λ_adapt*L_adapt
 
 ## 数据预处理
 
-- 输入: 15张日尺度多通道图像 (B, 15, C_in, H_in, W_in)
-- 标签: 第16天高分辨率单通道图像 (B, 1, H_out, W_out)
-- 归一化: 每通道分别做z-score或min-max
-- 数据增强: 随机裁剪、旋转、翻转等
+- 输入: 多个流域的历史气象 forcing 数据和静态属性
+- 标签: 目标流域的径流时间序列
+- 归一化: 每个流域的特征分别做标准化处理
+- 数据增强: 在有测量流域上进行元学习训练
 
 ## 训练流程
 
-1. 从数据加载器获取批次数据
-2. SpatialEncoder对每帧编码
-3. TCN处理时间序列
-4. Transformer编码为条件特征
+1. 从数据加载器获取批次数据（支持多个流域）
+2. SpatialEncoder对每个流域的空间特征进行编码
+3. TCN处理气象 forcing 数据的时间序列
+4. Transformer实现跨流域的知识迁移
 5. 随机采样时间步，添加噪声
 6. UNet预测噪声并计算损失
 7. 反向传播更新参数
 
 ## 推理流程
 
-1. 给定输入序列获取条件编码
-2. 从噪声开始逐步去噪生成最终图像
-3. 可使用classifier-free guidance提高稳定性
+1. 给定目标流域的空间特征和气象 forcing 数据
+2. 获取条件编码
+3. 从噪声开始逐步去噪生成最终的径流预测
+4. 可使用分类器自由引导提高预测稳定性
 
 # TTF - Time Series Forecasting with Transformers and Diffusion
 
-This project implements a time series forecasting model using transformers and diffusion models.
+This project implements a time series forecasting model using transformers and diffusion models for streamflow prediction in ungauged basins.
 
 ## Project Structure
 
@@ -176,10 +177,10 @@ The project supports configuration files to adjust model parameters. Example con
 ## Model Architecture
 
 The model consists of four main components:
-1. Spatial Encoder (CNN)
-2. Temporal Encoder (TCN)
-3. Global Context Encoder (Transformer)
-4. Diffusion Decoder (Conditional UNet)
+1. Spatial Encoder (CNN) - Extracts spatial features from basin characteristics
+2. Temporal Encoder (TCN) - Processes meteorological forcing data
+3. Global Context Encoder (Transformer) - Enables knowledge transfer between gauged and ungauged basins
+4. Diffusion Decoder (Conditional UNet) - Generates accurate streamflow predictions
 
 ## License
 
