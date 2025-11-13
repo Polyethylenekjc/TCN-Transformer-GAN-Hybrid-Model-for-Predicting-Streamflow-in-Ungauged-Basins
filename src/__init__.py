@@ -1,3 +1,3 @@
-"""
-TTF (Time Series Forecasting with Transformers and Diffusion) Package
-"""
+"""Streamflow prediction package."""
+
+__version__ = "1.0.0"

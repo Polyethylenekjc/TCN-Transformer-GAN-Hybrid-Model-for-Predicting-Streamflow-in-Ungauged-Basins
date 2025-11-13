@@ -1,4 +1,6 @@
-/logs
 /data
-/checkpoints
-/samples
+/output
+/__pycache__
+*.log
+*.tmp
+.env
