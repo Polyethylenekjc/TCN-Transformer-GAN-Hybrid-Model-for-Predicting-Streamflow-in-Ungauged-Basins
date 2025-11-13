@@ -10,6 +10,12 @@ from typing import Dict
 import logging
 from datetime import datetime
 import numpy as np
+try:
+    from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn, SpinnerColumn
+    from rich.logging import RichHandler
+    RICH_AVAILABLE = True
+except Exception:
+    RICH_AVAILABLE = False
 
 from src.model import StreamflowPredictionModel, MultiTaskStreamflowModel
 from src.dataset import StreamflowDataset, DataLoader
@@ -74,7 +80,9 @@ class Trainer:
     def _setup_logging(self) -> logging.Logger:
         """Setup logging."""
         logger = logging.getLogger('Trainer')
-        logger.setLevel(logging.INFO)
+        # Allow verbose debug in config
+        level = logging.DEBUG if self.config.get('system', {}).get('debug', False) else logging.INFO
+        logger.setLevel(level)
         
         # File handler
         log_dir = Path(self.config.get('data', {}).get('output_dir', './output'))
@@ -89,10 +97,15 @@ class Trainer:
         handler.setFormatter(formatter)
         logger.addHandler(handler)
         
-        # Console handler
-        console = logging.StreamHandler()
-        console.setFormatter(formatter)
-        logger.addHandler(console)
+        # Console handler: prefer rich if available
+        if RICH_AVAILABLE and self.config.get('system', {}).get('use_rich', True):
+            rich_handler = RichHandler()
+            rich_handler.setLevel(level)
+            logger.addHandler(rich_handler)
+        else:
+            console = logging.StreamHandler()
+            console.setFormatter(formatter)
+            logger.addHandler(console)
         
         return logger
     
@@ -121,7 +134,12 @@ class Trainer:
         total_img_loss = 0.0
         total_stn_loss = 0.0
         num_batches = 0
+        total_batches = len(dataloader)
         
+        # Use rich progress bar if available and enabled
+        use_rich = RICH_AVAILABLE and self.config.get('system', {}).get('use_rich', True)
+        # When using external Progress (from train), train_epoch will receive progress and task id
+
         for batch_idx, batch in enumerate(dataloader):
             images = batch['images'].to(self.device)
             output_image = batch['output_image'].to(self.device)
@@ -175,6 +193,7 @@ class Trainer:
                 # Log GPU memory
                 if (batch_idx + 1) % (self.log_interval * self.grad_accum_steps) == 0:
                     self._log_gpu_memory()
+                    # (Removed LR/GradNorm logging as requested)
             
             # Periodic logging
             if (batch_idx + 1) % self.log_interval == 0:
@@ -186,6 +205,18 @@ class Trainer:
                     f"Epoch {self.epoch} Batch {batch_idx + 1}: "
                     f"Loss={avg_loss:.6f}, Img={avg_img:.6f}, Stn={avg_stn:.6f}"
                 )
+            # If an external progress/task were provided in self._active_progress, update it
+            active = getattr(self, '_active_progress', None)
+            if active is not None:
+                prog, batch_task = active
+                try:
+                    batch_loss = loss_dict['total'].item()
+                except Exception:
+                    batch_loss = 0.0
+                try:
+                    prog.update(batch_task, advance=1, loss=batch_loss)
+                except Exception:
+                    pass
         
         return {
             'loss': total_loss / num_batches,
@@ -274,14 +305,47 @@ class Trainer:
         output_dir = Path(self.config.get('data', {}).get('output_dir', './output'))
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Optionally use a single rich Progress with two tasks: epochs and batches
+        use_rich = RICH_AVAILABLE and self.config.get('system', {}).get('use_rich', True)
+        if use_rich:
+            progress = Progress(
+                SpinnerColumn(),
+                "[progress.description]{task.description}",
+                BarColumn(),
+                TextColumn("Loss: {task.fields[loss]:.4f}"),
+                TimeRemainingColumn()
+            )
+            progress.start()
+            epoch_task = progress.add_task("Training", total=num_epochs, loss=0.0)
+            # batch_task will be updated per-epoch
+
         for epoch in range(num_epochs):
             self.epoch = epoch
-            
+
+            # If using rich, set up active progress and batch task
+            if use_rich:
+                total_batches = len(train_loader)
+                batch_task = progress.add_task(f"Epoch {epoch}", total=total_batches, loss=0.0)
+                # expose to train_epoch for updates
+                self._active_progress = (progress, batch_task)
+            else:
+                self._active_progress = None
+
             # Train
             train_metrics = self.train_epoch(train_loader)
             self.logger.info(
                 f"Epoch {epoch} - Train Loss: {train_metrics['loss']:.6f}"
             )
+
+            if use_rich:
+                # advance epoch progress and remove batch task
+                progress.update(epoch_task, advance=1)
+                try:
+                    progress.remove_task(batch_task)
+                except Exception:
+                    pass
+                # clear active progress
+                self._active_progress = None
             
             # Validate
             if val_loader is not None:
