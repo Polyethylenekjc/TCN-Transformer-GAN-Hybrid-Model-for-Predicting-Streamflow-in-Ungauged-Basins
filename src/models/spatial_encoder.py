@@ -45,9 +45,15 @@ class SpatialEncoder(nn.Module):
         super(SpatialEncoder, self).__init__()
         self.d_model = d_model
         
-        # 初始卷积层
+        # 初始卷积层 - 简化为 input_channels->512->128->32 的通道数序列
         layers = [
-            nn.Conv2d(input_channels, 32, kernel_size=3, padding=1),
+            nn.Conv2d(input_channels, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True)
         ]

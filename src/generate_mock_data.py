@@ -139,10 +139,10 @@ def main():
         num_samples=100, 
         sequence_length=3,
         input_channels=5, 
-        input_height=128, 
-        input_width=128,
-        output_height=256, 
-        output_width=256
+        input_height=256, 
+        input_width=256,
+        output_height=512, 
+        output_width=512
     )
     
     # 生成验证数据
@@ -152,10 +152,10 @@ def main():
         num_samples=20, 
         sequence_length=3,
         input_channels=5, 
-        input_height=128, 
-        input_width=128,
-        output_height=256, 
-        output_width=256
+        input_height=512, 
+        input_width=512,
+        output_height=1024, 
+        output_width=1024
     )
     
     print("Mock data generation completed!")
