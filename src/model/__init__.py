@@ -39,8 +39,14 @@ class StreamflowPredictionModel(nn.Module):
         self.window_size = data_cfg.get('window_size', 5)
         
         # Input/output dimensions
-        self.input_height = 128
-        self.input_width = 128
+        # Input image size from config (height, width)
+        img_size = data_cfg.get('image_size', [128, 128])
+        if isinstance(img_size, int):
+            self.input_height = int(img_size)
+            self.input_width = int(img_size)
+        else:
+            self.input_height = int(img_size[0])
+            self.input_width = int(img_size[1])
         self.output_height = self.input_height * self.upscale_factor
         self.output_width = self.input_width * self.upscale_factor
         
@@ -56,11 +62,9 @@ class StreamflowPredictionModel(nn.Module):
         
         cnn_out_channels = self.cnn_encoder.get_output_channels()
         
-        # Calculate encoder output spatial dimensions
-        # After each layer with MaxPool2d, spatial dims reduce by 2
-        encoder_spatial_reduction = 2 ** (self.num_layers - 1)
-        encoded_h = self.input_height // encoder_spatial_reduction
-        encoded_w = self.input_width // encoder_spatial_reduction
+        # Encoder output spatial dimensions are enforced by CNNEncoder's adaptive pool
+        encoded_h = getattr(self.cnn_encoder, 'target_spatial', 32)
+        encoded_w = getattr(self.cnn_encoder, 'target_spatial', 32)
         
         # Flatten features for temporal module
         cnn_feature_size = cnn_out_channels * encoded_h * encoded_w

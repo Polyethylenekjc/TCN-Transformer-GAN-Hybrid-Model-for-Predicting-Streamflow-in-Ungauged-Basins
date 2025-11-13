@@ -42,6 +42,7 @@ def generate_dummy_data(
             'image_dir': str(image_dir),
             'station_dir': str(station_dir),
             'output_dir': str(output_path / 'output'),
+            'image_size': [height, width],
             'resolution': 0.05,
             'region': [100, 110, 25, 35],
             'window_size': 5,
@@ -86,6 +87,15 @@ def generate_dummy_data(
     
     print(f"Config saved to {config_path}")
     
+    # Determine image size from config
+    img_size = config['data'].get('image_size', [128, 128])
+    if isinstance(img_size, int):
+        height = int(img_size)
+        width = int(img_size)
+    else:
+        height = int(img_size[0])
+        width = int(img_size[1])
+
     # Generate images
     print(f"Generating {days} days of images...")
     start_date = datetime(2020, 1, 1)
@@ -168,6 +178,18 @@ if __name__ == '__main__':
         help='Number of image channels'
     )
     parser.add_argument(
+        '--height',
+        type=int,
+        default=128,
+        help='Image height'
+    )
+    parser.add_argument(
+        '--width',
+        type=int,
+        default=128,
+        help='Image width'
+    )
+    parser.add_argument(
         '--output-dir',
         type=str,
         default='./data',
@@ -180,5 +202,7 @@ if __name__ == '__main__':
         days=args.days,
         stations=args.stations,
         channels=args.channels,
+        height=args.height,
+        width=args.width,
         output_dir=args.output_dir
     )

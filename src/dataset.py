@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
+import torch.nn.functional as F
 from pathlib import Path
 from typing import Dict, Tuple, Optional, List
 import os
@@ -38,6 +39,14 @@ class StreamflowDataset(Dataset):
         self.upscale_factor = config.get('data', {}).get('upscale_factor', 2)
         self.region = config.get('data', {}).get('region', [100, 110, 25, 35])
         self.resolution = config.get('data', {}).get('resolution', 0.05)
+        # Desired input image size, can be single int or [H, W]
+        img_size_cfg = config.get('data', {}).get('image_size', [128, 128])
+        if isinstance(img_size_cfg, int):
+            self.input_height = int(img_size_cfg)
+            self.input_width = int(img_size_cfg)
+        else:
+            self.input_height = int(img_size_cfg[0])
+            self.input_width = int(img_size_cfg[1])
         
         # Load image filenames (sorted by date)
         self.image_files = sorted([
@@ -101,7 +110,21 @@ class StreamflowDataset(Dataset):
         
         for img_file in self.image_files:
             img = np.load(img_file)
-            all_images.append(img)
+            # Ensure image has shape (C, H, W)
+            img_t = torch.from_numpy(img).float()
+            if img_t.dim() == 2:
+                img_t = img_t.unsqueeze(0)
+
+            # Resize if necessary to configured input size
+            if img_t.shape[1] != self.input_height or img_t.shape[2] != self.input_width:
+                img_t = F.interpolate(
+                    img_t.unsqueeze(0),
+                    size=(self.input_height, self.input_width),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0)
+
+            all_images.append(img_t.numpy())
         
         for station_data in self.stations.values():
             if 'runoff' in station_data.columns:
@@ -164,9 +187,9 @@ class StreamflowDataset(Dataset):
         px = int((lon - lon_min) / self.resolution)
         py = int((lat_min - lat) / self.resolution)  # Note: lat inverted
         
-        # Clamp to image bounds
-        px = max(0, min(px, 127))
-        py = max(0, min(py, 127))
+        # Clamp to image bounds using configured size
+        px = max(0, min(px, self.input_width - 1))
+        py = max(0, min(py, self.input_height - 1))
         
         return px, py
     
@@ -194,18 +217,46 @@ class StreamflowDataset(Dataset):
         input_images = []
         for idx_img in sample['input_indices']:
             img = np.load(self.image_files[idx_img])
-            input_images.append(img)
+            img_t = torch.from_numpy(img).float()
+            if img_t.dim() == 2:
+                img_t = img_t.unsqueeze(0)
+
+            # Resize to configured input size if needed
+            if img_t.shape[1] != self.input_height or img_t.shape[2] != self.input_width:
+                img_t = F.interpolate(
+                    img_t.unsqueeze(0),
+                    size=(self.input_height, self.input_width),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(0)
+
+            input_images.append(img_t.numpy())
         
         # Stack: (T, C, H, W)
         input_images = np.stack(input_images, axis=0)
         
         # Load output image (first channel)
         output_img = np.load(self.image_files[sample['output_index']])
-        output_flow = output_img[0:1, :, :]  # (1, H, W)
+        out_t = torch.from_numpy(output_img).float()
+        if out_t.dim() == 2:
+            out_t = out_t.unsqueeze(0)
+
+        # Use first channel as flow and resize to target input size if needed
+        out_t = out_t[0:1, :, :]
+        if out_t.shape[1] != self.input_height or out_t.shape[2] != self.input_width:
+            out_t = F.interpolate(
+                out_t.unsqueeze(0),
+                size=(self.input_height, self.input_width),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+
+        output_flow = out_t.numpy()
         
         # Normalize
         if self.normalize:
-            input_images = (input_images - self.image_mean) / self.image_std
+            # Normalize per-pixel using computed statistics
+            input_images = (np.array(input_images) - self.image_mean) / self.image_std
             output_flow = (output_flow - self.image_mean) / self.image_std
         
         # Get station data
@@ -220,10 +271,10 @@ class StreamflowDataset(Dataset):
             )
         
         return {
-            'images': torch.from_numpy(input_images).float(),
+            'images': torch.from_numpy(np.array(input_images)).float(),
             'output_image': torch.from_numpy(output_flow).float(),
-            'stations': torch.from_numpy(station_runoffs).float(),
-            'station_positions': torch.from_numpy(station_positions).long(),
+            'stations': torch.from_numpy(station_runoffs).float() if len(station_runoffs) > 0 else torch.from_numpy(np.array([])).float(),
+            'station_positions': torch.from_numpy(station_positions).long() if station_positions.size else torch.from_numpy(np.array([], dtype=np.int64)).long(),
             'date': output_date
         }
 

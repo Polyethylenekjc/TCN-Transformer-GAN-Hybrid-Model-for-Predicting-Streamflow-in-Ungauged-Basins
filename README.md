@@ -60,7 +60,7 @@ python main.py generate --days 30 --stations 5 --channels 10
 - `--channels 10` - 图像10个通道
 
 生成文件：
-- `data/images/20200101.npy` - (10, 128, 128)多通道图像
+- `data/images/20200101.npy` - (C, H, W) 多通道图像（H,W 由 `data.image_size` 配置）
 - `data/stations/station_00.csv` - 站点数据
 - `data/config.yaml` - 配置文件
 
@@ -136,13 +136,13 @@ system:
 
 文件名: `YYYYMMDD.npy` (e.g., `20200101.npy`)
 
-格式: NumPy数组, 形状 `(C, H, W)` 例如 `(10, 128, 128)`
-- C: 通道数 (气象变量，由config.yaml控制)
-- H, W: 空间分辨率 (通常128×128)
+格式: NumPy数组, 形状 `(C, H, W)` 例如 `(10, H, W)`（H,W 由 `data.image_size` 配置，默认 `[128, 128]`）
+- C: 通道数 (气象变量，由`config.yaml` 的 `model.input_channels` 控制)
+- H, W: 空间分辨率（由 `data.image_size` 控制，默认 128×128）
 
 ```python
 import numpy as np
-image = np.random.randn(10, 128, 128)  # 10通道图像
+image = np.random.randn(10, H, W)  # 10通道图像 (H,W 来自 `data.image_size`)
 np.save('20200101.npy', image)
 ```
 
@@ -469,7 +469,7 @@ system:
 **原因**: 图像大小与预期不符
 
 **解决**:
-- 检查数据: `np.load('data/images/20200101.npy').shape` 应为 `(10, 128, 128)`
+- 检查数据: `np.load('data/images/20200101.npy').shape` 应为 `(C, H, W)`，其中 H/W 对应 `data.image_size` 中设置的值
 - 确保所有图像尺寸一致
 - 检查config.yaml中的upscale_factor
 

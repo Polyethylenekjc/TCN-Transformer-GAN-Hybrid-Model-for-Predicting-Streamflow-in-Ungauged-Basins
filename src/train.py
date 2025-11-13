@@ -2,7 +2,8 @@
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch import amp
+from torch.cuda.amp import GradScaler
 import os
 from pathlib import Path
 from typing import Dict
@@ -136,7 +137,8 @@ class Trainer:
             ]
             
             # Forward pass
-            with autocast(enabled=self.use_amp):
+            # Use torch.amp.autocast with explicit device_type to avoid FutureWarning
+            with amp.autocast(device_type=self.device.type, enabled=self.use_amp):
                 predictions = self.model(images)
                 
                 loss_dict = self.loss_fn(

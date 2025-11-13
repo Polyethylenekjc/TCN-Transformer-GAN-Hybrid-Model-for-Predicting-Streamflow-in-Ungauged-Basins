@@ -32,6 +32,8 @@ class CNNEncoder(nn.Module):
         self.input_channels = input_channels
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
+        # target spatial size after encoder (H', W')
+        self.target_spatial = 32
         
         layers = []
         in_channels = input_channels
@@ -62,6 +64,9 @@ class CNNEncoder(nn.Module):
         
         self.encoder = nn.Sequential(*layers)
         self.out_channels = in_channels
+
+        # Adaptive pooling to enforce fixed spatial output size (e.g., 32x32)
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((self.target_spatial, self.target_spatial))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -79,6 +84,12 @@ class CNNEncoder(nn.Module):
             x = x.view(B * T, C, H, W)
         
         x = self.encoder(x)
+        # Ensure output spatial dimensions are fixed to target_spatial
+        if x.dim() == 4:
+            _, _, h, w = x.shape
+            if h != self.target_spatial or w != self.target_spatial:
+                x = self.adaptive_pool(x)
+
         return x
     
     def get_output_channels(self) -> int:
