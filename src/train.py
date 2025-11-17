@@ -157,7 +157,13 @@ class Trainer:
             # Forward pass
             # Use torch.amp.autocast with explicit device_type to avoid FutureWarning
             with amp.autocast(device_type=self.device.type, enabled=self.use_amp):
+                if torch.isnan(images).any() or torch.isinf(images).any():
+                    self.logger.warning("NaN or Inf found in input images!")
+                
                 predictions = self.model(images)
+
+                if torch.isnan(predictions).any() or torch.isinf(predictions).any():
+                    self.logger.warning("NaN or Inf found in model predictions!")
                 
                 loss_dict = self.loss_fn(
                     predictions,
@@ -166,6 +172,9 @@ class Trainer:
                     station_runoffs
                 )
                 
+                if torch.isnan(loss_dict['total']).any() or torch.isinf(loss_dict['total']).any():
+                    self.logger.warning("NaN or Inf found in loss!")
+
                 loss = loss_dict['total'] / self.grad_accum_steps
             
             # Backward pass

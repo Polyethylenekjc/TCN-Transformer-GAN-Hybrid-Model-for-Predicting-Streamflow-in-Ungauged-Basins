@@ -92,8 +92,15 @@ class Evaluator:
         pred_dir = output_path / 'predictions'
         pred_dir.mkdir(parents=True, exist_ok=True)
         
-        all_predictions = []
-        all_targets = []
+        # Incremental metric calculation to avoid OOM
+        sum_squared_error = 0.0
+        sum_abs_error = 0.0
+        total_pixels = 0
+        
+        # Store per-sample R2 and NSE
+        per_sample_r2 = []
+        per_sample_nse = []
+        
         station_results = []
         
         self.logger.info(f"Evaluating on {len(dataset)} samples...")
@@ -107,8 +114,34 @@ class Evaluator:
             
             target = sample['output_image'].unsqueeze(0)  # (1, 1, H, W)
             
-            all_predictions.append(prediction)
-            all_targets.append(target)
+            # Ensure same shape by resizing target if needed
+            if prediction.shape != target.shape:
+                import torch.nn.functional as F
+                target = F.interpolate(
+                    target,
+                    size=(prediction.shape[2], prediction.shape[3]),
+                    mode='bilinear',
+                    align_corners=False
+                )
+            
+            # Incremental statistics
+            pred_np = prediction.numpy().flatten()
+            target_np = target.numpy().flatten()
+            
+            sum_squared_error += ((pred_np - target_np) ** 2).sum()
+            sum_abs_error += np.abs(pred_np - target_np).sum()
+            total_pixels += pred_np.size
+            
+            # Calculate per-sample R2 and NSE
+            mean_target = target_np.mean()
+            ss_res = ((pred_np - target_np) ** 2).sum()
+            ss_tot = ((target_np - mean_target) ** 2).sum()
+            
+            if ss_tot > 1e-10:
+                sample_r2 = 1 - (ss_res / ss_tot)
+                sample_nse = 1 - (ss_res / ss_tot)
+                per_sample_r2.append(sample_r2)
+                per_sample_nse.append(sample_nse)
             
             # Save prediction image
             pred_image = prediction[0, 0].numpy()
@@ -145,11 +178,20 @@ class Evaluator:
             if (idx + 1) % 10 == 0:
                 self.logger.info(f"Evaluated {idx + 1}/{len(dataset)} samples")
         
-        # Calculate metrics
-        all_predictions = torch.cat(all_predictions, dim=0)
-        all_targets = torch.cat(all_targets, dim=0)
+        # Calculate metrics from accumulated statistics
+        rmse = np.sqrt(sum_squared_error / total_pixels)
+        mae = sum_abs_error / total_pixels
         
-        metrics = calculate_metrics(all_predictions, all_targets)
+        # Average R2 and NSE across all samples
+        r2 = np.mean(per_sample_r2) if per_sample_r2 else 0.0
+        nse = np.mean(per_sample_nse) if per_sample_nse else 0.0
+        
+        metrics = {
+            'RMSE': float(rmse),
+            'MAE': float(mae),
+            'R2': float(r2),
+            'NSE': float(nse)
+        }
         
         self.logger.info(f"Image-level metrics:")
         for metric_name, value in metrics.items():

@@ -48,9 +48,10 @@ class StreamflowDataset(Dataset):
             self.input_height = int(img_size_cfg[0])
             self.input_width = int(img_size_cfg[1])
         
-        # Load image filenames (sorted by date)
+        # Load image filenames (sorted by date), ignore mask files like *_mask.npy
         self.image_files = sorted([
-            f for f in self.image_dir.iterdir() if f.suffix == '.npy'
+            f for f in self.image_dir.iterdir()
+            if f.suffix == '.npy' and not f.name.endswith('_mask.npy')
         ])
         
         if len(self.image_files) == 0:
@@ -103,19 +104,32 @@ class StreamflowDataset(Dataset):
         
         return samples
     
+    def _mask_path_for(self, npy_path: Path) -> Path:
+        """Return expected mask path for a given npy file."""
+        return npy_path.with_name(npy_path.stem + '_mask.npy')
+
     def _compute_statistics(self) -> None:
-        """Compute mean and std for normalization."""
-        all_images = []
-        all_runoffs = []
-        
+        """Compute mean and std for normalization in a memory-efficient way.
+
+        Instead of collecting all pixel values in memory, accumulate per-file
+        sums and sums of squares and compute global mean/std from these
+        aggregates. This avoids OOM when there are many or large image files.
+        """
+        total_pixels = 0
+        total_sum = 0.0
+        total_sumsq = 0.0
+
+        # Accumulators for station runoffs
+        total_runoff_count = 0
+        total_runoff_sum = 0.0
+        total_runoff_sumsq = 0.0
+
         for img_file in self.image_files:
             img = np.load(img_file)
-            # Ensure image has shape (C, H, W)
             img_t = torch.from_numpy(img).float()
             if img_t.dim() == 2:
                 img_t = img_t.unsqueeze(0)
 
-            # Resize if necessary to configured input size
             if img_t.shape[1] != self.input_height or img_t.shape[2] != self.input_width:
                 img_t = F.interpolate(
                     img_t.unsqueeze(0),
@@ -124,27 +138,61 @@ class StreamflowDataset(Dataset):
                     align_corners=False
                 ).squeeze(0)
 
-            all_images.append(img_t.numpy())
-        
-        for station_data in self.stations.values():
+            mask_path = self._mask_path_for(Path(img_file))
+            if mask_path.exists():
+                mask_np = np.load(mask_path)
+                mask_t = torch.from_numpy(mask_np.astype(np.float32)).unsqueeze(0)
+                if mask_t.shape[1] != self.input_height or mask_t.shape[2] != self.input_width:
+                    mask_t = F.interpolate(
+                        mask_t.unsqueeze(0),
+                        size=(self.input_height, self.input_width),
+                        mode='nearest'
+                    ).squeeze(0)
+                mask_bin = (mask_t.squeeze(0) > 0.5)
+                vals = img_t[:, mask_bin].cpu().numpy().ravel()
+            else:
+                vals = img_t.cpu().numpy().ravel()
+
+            if vals.size > 0:
+                # Replace NaNs and Infs
+                if not np.all(np.isfinite(vals)):
+                    print(f"Warning: NaNs or Infs found in image file {img_file}. Replacing with 0.")
+                    vals = np.nan_to_num(vals)
+                
+                total_pixels += vals.size
+                total_sum += float(vals.sum())
+                total_sumsq += float((vals ** 2).sum())
+
+        for station_name, station_data in self.stations.items():
             if 'runoff' in station_data.columns:
-                all_runoffs.extend(station_data['runoff'].values)
-        
-        # Compute statistics
-        all_images_array = np.concatenate(
-            [im.flatten() for im in all_images]
-        )
-        all_runoffs_array = np.array(all_runoffs)
-        
-        self.image_mean = np.mean(all_images_array)
-        self.image_std = np.std(all_images_array)
-        self.runoff_mean = np.mean(all_runoffs_array)
-        self.runoff_std = np.std(all_runoffs_array)
-        
-        # Avoid division by zero
+                arr = station_data['runoff'].values.astype(np.float64)
+                
+                # Replace NaNs and Infs
+                if not np.all(np.isfinite(arr)):
+                    print(f"Warning: NaNs or Infs found in station {station_name}. Replacing with 0.")
+                    arr = np.nan_to_num(arr)
+
+                total_runoff_count += arr.size
+                total_runoff_sum += float(arr.sum())
+                total_runoff_sumsq += float((arr ** 2).sum())
+
+        if total_pixels == 0:
+            raise RuntimeError("No valid pixels found to compute statistics.")
+
+        self.image_mean = total_sum / total_pixels
+        img_var = total_sumsq / total_pixels - (self.image_mean ** 2)
+        self.image_std = float(np.sqrt(max(img_var, 0.0)))
         if self.image_std == 0:
             self.image_std = 1.0
-        if self.runoff_std == 0:
+
+        if total_runoff_count > 0:
+            self.runoff_mean = total_runoff_sum / total_runoff_count
+            run_var = total_runoff_sumsq / total_runoff_count - (self.runoff_mean ** 2)
+            self.runoff_std = float(np.sqrt(max(run_var, 0.0)))
+            if self.runoff_std == 0:
+                self.runoff_std = 1.0
+        else:
+            self.runoff_mean = 0.0
             self.runoff_std = 1.0
     
     def _get_station_target(self, date: str) -> Tuple[np.ndarray, float]:
@@ -181,16 +229,26 @@ class StreamflowDataset(Dataset):
         return np.array(date_positions, dtype=np.int32), np.array(date_runoffs)
     
     def _lonlat_to_pixel(self, lon: float, lat: float) -> Tuple[int, int]:
-        """Convert lon/lat to pixel position."""
+        """Convert lon/lat to pixel position using proportional mapping.
+        This keeps mapping correct even when image_size != (region span / resolution).
+        """
         lon_min, lon_max, lat_min, lat_max = self.region
-        
-        px = int((lon - lon_min) / self.resolution)
-        py = int((lat_max - lat) / self.resolution)
-        
-        # Clamp to image bounds using configured size
+
+        # Avoid division by zero
+        lon_span = max(1e-9, (lon_max - lon_min))
+        lat_span = max(1e-9, (lat_max - lat_min))
+
+        # Proportional mapping: west->east maps to 0..W-1, north->south maps to 0..H-1
+        x_ratio = (lon - lon_min) / lon_span
+        y_ratio = (lat_max - lat) / lat_span
+
+        px = int(round(x_ratio * (self.input_width - 1)))
+        py = int(round(y_ratio * (self.input_height - 1)))
+
+        # Clamp to image bounds
         px = max(0, min(px, self.input_width - 1))
         py = max(0, min(py, self.input_height - 1))
-        
+
         return px, py
     
     def __len__(self) -> int:
@@ -230,6 +288,19 @@ class StreamflowDataset(Dataset):
                     align_corners=False
                 ).squeeze(0)
 
+            # Apply mask if present
+            mask_path = self._mask_path_for(Path(self.image_files[idx_img]))
+            if mask_path.exists():
+                mask_np = np.load(mask_path)
+                mask_t = torch.from_numpy(mask_np.astype(np.float32)).unsqueeze(0)
+                if mask_t.shape[1] != self.input_height or mask_t.shape[2] != self.input_width:
+                    mask_t = F.interpolate(
+                        mask_t.unsqueeze(0),
+                        size=(self.input_height, self.input_width),
+                        mode='nearest'
+                    ).squeeze(0)
+                img_t = img_t * mask_t  # broadcast (C,H,W) * (1,H,W)
+
             input_images.append(img_t.numpy())
         
         # Stack: (T, C, H, W)
@@ -250,6 +321,19 @@ class StreamflowDataset(Dataset):
                 mode='bilinear',
                 align_corners=False
             ).squeeze(0)
+
+        # Apply mask to output if present
+        out_mask_path = self._mask_path_for(Path(self.image_files[sample['output_index']]))
+        if out_mask_path.exists():
+            mask_np = np.load(out_mask_path)
+            mask_t = torch.from_numpy(mask_np.astype(np.float32)).unsqueeze(0)
+            if mask_t.shape[1] != self.input_height or mask_t.shape[2] != self.input_width:
+                mask_t = F.interpolate(
+                    mask_t.unsqueeze(0),
+                    size=(self.input_height, self.input_width),
+                    mode='nearest'
+                ).squeeze(0)
+            out_t = out_t * mask_t
 
         output_flow = out_t.numpy()
         
