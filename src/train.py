@@ -383,15 +383,25 @@ class Trainer:
         self.logger.info("Training complete!")
 
 
-def main(config_path: str = './data/config.yaml'):
+def main():
     """
     Main training function.
-    
-    Args:
-        config_path: Path to configuration file
     """
+    import argparse
+    parser = argparse.ArgumentParser(description='Train Streamflow Prediction Model')
+    parser.add_argument('--config', type=str, default='./data/config.yaml', help='Path to config file')
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+    parser.add_argument('--epochs', type=int, default=None, help='Override number of epochs from config')
+    args = parser.parse_args()
+
     # Load configuration
-    config = ConfigLoader.load_config(config_path)
+    config = ConfigLoader.load_config(args.config)
+    
+    # Override epochs if provided
+    if args.epochs is not None:
+        if 'train' not in config:
+            config['train'] = {}
+        config['train']['num_epochs'] = args.epochs
     
     # Create dataset
     image_dir = config.get('data', {}).get('image_dir', './data/images')
@@ -405,7 +415,7 @@ def main(config_path: str = './data/config.yaml'):
     )
     
     # Initialize trainer
-    trainer = Trainer(config)
+    trainer = Trainer(config, model_path=args.resume)
     
     # Train
     num_epochs = config.get('train', {}).get('num_epochs', 100)
@@ -413,6 +423,4 @@ def main(config_path: str = './data/config.yaml'):
 
 
 if __name__ == '__main__':
-    import sys
-    config_path = sys.argv[1] if len(sys.argv) > 1 else './data/config.yaml'
-    main(config_path)
+    main()

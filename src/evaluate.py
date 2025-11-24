@@ -230,6 +230,11 @@ class Evaluator:
             pred_file = pred_dir / f'pred_{sample["date"]}.npy'
             np.save(pred_file, pred_image)
             
+            # Save target image (normalized) for visualization comparison
+            target_image = target[0, 0].numpy()
+            target_file = pred_dir / f'target_{sample["date"]}.npy'
+            np.save(target_file, target_image)
+            
             # Station predictions
             stations = sample['stations']
             positions = sample['station_positions']

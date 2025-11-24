@@ -33,6 +33,7 @@ class StreamflowDataset(Dataset):
         self.station_dir = Path(station_dir)
         self.config = config
         self.normalize = normalize
+        self.normalization_type = config.get('data', {}).get('normalization_type', 'z_score')
         
         # Configuration parameters
         self.window_size = config.get('data', {}).get('window_size', 5)
@@ -67,8 +68,12 @@ class StreamflowDataset(Dataset):
         # Statistics for normalization
         self.image_mean = None
         self.image_std = None
+        self.image_min = None
+        self.image_max = None
         self.runoff_mean = None
         self.runoff_std = None
+        self.runoff_min = None
+        self.runoff_max = None
         
         if self.normalize:
             self._compute_statistics()
@@ -110,20 +115,32 @@ class StreamflowDataset(Dataset):
         return npy_path.with_name(npy_path.stem + '_mask.npy')
 
     def _compute_statistics(self) -> None:
-        """Compute mean and std for normalization in a memory-efficient way.
-
-        Instead of collecting all pixel values in memory, accumulate per-file
-        sums and sums of squares and compute global mean/std from these
-        aggregates. This avoids OOM when there are many or large image files.
-        """
+        """Compute mean and std per channel for normalization in a memory-efficient way."""
+        
+        # Initialize with first image to get channels
+        if not self.image_files:
+            return
+            
+        first_img = np.load(self.image_files[0])
+        if first_img.ndim == 2:
+            self.num_channels = 1
+        else:
+            self.num_channels = first_img.shape[0]
+            
+        C = self.num_channels
+        
         total_pixels = 0
-        total_sum = 0.0
-        total_sumsq = 0.0
+        channel_sum = np.zeros(C, dtype=np.float64)
+        channel_sumsq = np.zeros(C, dtype=np.float64)
+        channel_min = np.full(C, np.inf, dtype=np.float64)
+        channel_max = np.full(C, -np.inf, dtype=np.float64)
 
         # Accumulators for station runoffs
         total_runoff_count = 0
         total_runoff_sum = 0.0
         total_runoff_sumsq = 0.0
+        runoff_min = float('inf')
+        runoff_max = float('-inf')
 
         for img_file in self.image_files:
             img = np.load(img_file)
@@ -150,19 +167,27 @@ class StreamflowDataset(Dataset):
                         mode='nearest'
                     ).squeeze(0)
                 mask_bin = (mask_t.squeeze(0) > 0.5)
-                vals = img_t[:, mask_bin].cpu().numpy().ravel()
+                # Select masked pixels for each channel: (C, N_masked)
+                vals = img_t[:, mask_bin].cpu().numpy()
             else:
-                vals = img_t.cpu().numpy().ravel()
+                # Flatten spatial dims: (C, H*W)
+                vals = img_t.reshape(C, -1).cpu().numpy()
 
-            if vals.size > 0:
+            if vals.shape[1] > 0:
                 # Replace NaNs and Infs
                 if not np.all(np.isfinite(vals)):
                     print(f"Warning: NaNs or Infs found in image file {img_file}. Replacing with 0.")
                     vals = np.nan_to_num(vals)
                 
-                total_pixels += vals.size
-                total_sum += float(vals.sum())
-                total_sumsq += float((vals ** 2).sum())
+                total_pixels += vals.shape[1]
+                channel_sum += vals.sum(axis=1)
+                channel_sumsq += (vals ** 2).sum(axis=1)
+                
+                # Update min/max
+                current_min = vals.min(axis=1)
+                current_max = vals.max(axis=1)
+                channel_min = np.minimum(channel_min, current_min)
+                channel_max = np.maximum(channel_max, current_max)
 
         for station_name, station_data in self.stations.items():
             if 'runoff' in station_data.columns:
@@ -176,15 +201,29 @@ class StreamflowDataset(Dataset):
                 total_runoff_count += arr.size
                 total_runoff_sum += float(arr.sum())
                 total_runoff_sumsq += float((arr ** 2).sum())
+                
+                # Update runoff min/max
+                if arr.size > 0:
+                    current_r_min = float(arr.min())
+                    current_r_max = float(arr.max())
+                    if current_r_min < runoff_min:
+                        runoff_min = current_r_min
+                    if current_r_max > runoff_max:
+                        runoff_max = current_r_max
 
         if total_pixels == 0:
             raise RuntimeError("No valid pixels found to compute statistics.")
 
-        self.image_mean = total_sum / total_pixels
-        img_var = total_sumsq / total_pixels - (self.image_mean ** 2)
-        self.image_std = float(np.sqrt(max(img_var, 0.0)))
-        if self.image_std == 0:
-            self.image_std = 1.0
+        self.image_mean = channel_sum / total_pixels
+        img_var = channel_sumsq / total_pixels - (self.image_mean ** 2)
+        self.image_std = np.sqrt(np.maximum(img_var, 0.0))
+        self.image_std[self.image_std == 0] = 1.0
+            
+        self.image_min = channel_min
+        self.image_max = channel_max
+        # Avoid division by zero for constant channels
+        mask_const = (self.image_max == self.image_min)
+        self.image_max[mask_const] += 1.0
 
         if total_runoff_count > 0:
             self.runoff_mean = total_runoff_sum / total_runoff_count
@@ -192,9 +231,16 @@ class StreamflowDataset(Dataset):
             self.runoff_std = float(np.sqrt(max(run_var, 0.0)))
             if self.runoff_std == 0:
                 self.runoff_std = 1.0
+            
+            self.runoff_min = runoff_min
+            self.runoff_max = runoff_max
+            if self.runoff_max == self.runoff_min:
+                self.runoff_max = self.runoff_min + 1.0
         else:
             self.runoff_mean = 0.0
             self.runoff_std = 1.0
+            self.runoff_min = 0.0
+            self.runoff_max = 1.0
     
     def _get_station_target(self, date: str) -> Tuple[np.ndarray, float]:
         """
@@ -304,6 +350,11 @@ class StreamflowDataset(Dataset):
             
             # Apply flow threshold to first channel (runoff/flow)
             img_np = img_t.numpy()
+            
+            # Replace NaNs/Infs in input image
+            if not np.all(np.isfinite(img_np)):
+                img_np = np.nan_to_num(img_np, nan=0.0, posinf=0.0, neginf=0.0)
+                
             if img_np.shape[0] > 0:  # If there's at least one channel
                 img_np[0][np.abs(img_np[0]) < self.flow_threshold] = 0.0
 
@@ -348,9 +399,22 @@ class StreamflowDataset(Dataset):
         
         # Normalize
         if self.normalize:
-            # Normalize per-pixel using computed statistics
-            input_images = (np.array(input_images) - self.image_mean) / self.image_std
-            output_flow = (output_flow - self.image_mean) / self.image_std
+            # Reshape stats for broadcasting: (1, C, 1, 1)
+            # input_images is (T, C, H, W)
+            img_min = self.image_min.reshape(1, -1, 1, 1)
+            img_max = self.image_max.reshape(1, -1, 1, 1)
+            img_mean = self.image_mean.reshape(1, -1, 1, 1)
+            img_std = self.image_std.reshape(1, -1, 1, 1)
+
+            if self.normalization_type == 'minmax':
+                # MinMax normalization to [0, 1]
+                input_images = (input_images - img_min) / (img_max - img_min)
+                # output_flow is channel 0
+                output_flow = (output_flow - self.image_min[0]) / (self.image_max[0] - self.image_min[0])
+            else:
+                # Z-score normalization (default)
+                input_images = (input_images - img_mean) / img_std
+                output_flow = (output_flow - self.image_mean[0]) / self.image_std[0]
         
         # Get station data
         output_date = sample['output_date']
@@ -359,9 +423,10 @@ class StreamflowDataset(Dataset):
         )
         
         if self.normalize and len(station_runoffs) > 0:
-            station_runoffs = (
-                (station_runoffs - self.runoff_mean) / self.runoff_std
-            )
+            if self.normalization_type == 'minmax':
+                station_runoffs = (station_runoffs - self.runoff_min) / (self.runoff_max - self.runoff_min)
+            else:
+                station_runoffs = (station_runoffs - self.runoff_mean) / self.runoff_std
         
         return {
             'images': torch.from_numpy(np.array(input_images)).float(),

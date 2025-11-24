@@ -40,6 +40,49 @@ project_root/
 └── README.md                # 本文档
 ```
 
+## 常用指令 (Common Commands)
+
+### 1. 数据准备 (Data Preparation)
+
+下载 ERA5 和 GLOFAS 数据并合并为 `.npy` 格式：
+```bash
+# 下载并处理 2015-2024 年的数据
+python src/utils/data_download.py --start-year 2015 --end-year 2024
+```
+
+### 2. 训练模型 (Training)
+
+**从头开始训练：**
+```bash
+python src/train.py --config data/config.yaml
+```
+
+**中断后继续训练 (Resume)：**
+```bash
+# 从最佳模型继续训练 50 个 epoch
+python src/train.py --resume output/best_model.pt --epochs 50
+```
+
+**指定 Epoch 数：**
+```bash
+python src/train.py --epochs 200
+```
+
+### 3. 评估模型 (Evaluation)
+
+评估模型在测试集上的表现：
+```bash
+python src/evaluate.py --model output/best_model.pt
+```
+
+### 4. 可视化预测结果 (Visualization)
+
+生成预测结果的对比图（支持反归一化显示真实数值）：
+```bash
+# 可视化 20200101 的预测结果，并反归一化
+python src/utils/visualize_predictions.py --date 20200101 --model output/best_model.pt --denormalize
+```
+
 ## 快速开始
 
 ### 1. 安装依赖

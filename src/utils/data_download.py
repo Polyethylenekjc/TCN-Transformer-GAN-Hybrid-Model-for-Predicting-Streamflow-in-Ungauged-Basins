@@ -293,7 +293,30 @@ def align_and_save_npy(years: List[int],
         for vn in var_map['era5_vars']:
             if vn not in sel_era5:
                 raise RuntimeError(f"Missing ERA5 variable: {vn}")
-            channels.append(sel_era5[vn].values.astype(np.float32))
+            
+            val = sel_era5[vn].values.astype(np.float32)
+            
+            # Unit conversion to keep values in reasonable range (e.g. 0-1000)
+            # Radiation/Heat Flux: J/m^2 -> W/m^2 (assuming daily/24h accumulation)
+            if vn in ['ssrd', 'surface_solar_radiation_downwards', 
+                      'str', 'surface_net_thermal_radiation', 
+                      'slhf', 'surface_latent_heat_flux']:
+                val = val / 86400.0
+            
+            # Water Depth: m -> mm
+            elif vn in ['tp', 'total_precipitation', 
+                        'e', 'total_evaporation', 'evap',
+                        'ro', 'runoff', 
+                        'ssro', 'sub_surface_runoff',
+                        'pev', 'potential_evaporation']:
+                val = val * 1000.0
+                
+            # Temperature: K -> C
+            elif vn in ['d2m', '2m_dewpoint_temperature', 
+                        'skt', 'skin_temperature']:
+                val = val - 273.15
+                
+            channels.append(val)
 
         arr = np.stack(channels, axis=0)  # (C,H,W)
         assert arr.shape[1] == H and arr.shape[2] == W, f"Spatial shape mismatch: {arr.shape} vs {(H,W)}"

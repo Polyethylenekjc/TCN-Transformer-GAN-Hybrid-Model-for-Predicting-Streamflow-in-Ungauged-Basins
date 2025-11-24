@@ -16,13 +16,13 @@ import random
 from typing import List, Tuple
 
 
-def load_image_pair(pred_file: Path, target_dir: Path) -> Tuple[np.ndarray, np.ndarray, str]:
+def load_image_pair(pred_file: Path, target_dir: Path = None) -> Tuple[np.ndarray, np.ndarray, str]:
     """
     Load a prediction and its corresponding target image.
     
     Args:
         pred_file: Path to prediction .npy file
-        target_dir: Directory containing target images
+        target_dir: Directory containing target images (optional, used as fallback)
         
     Returns:
         (prediction, target, date) tuple
@@ -33,17 +33,22 @@ def load_image_pair(pred_file: Path, target_dir: Path) -> Tuple[np.ndarray, np.n
     # Load prediction
     prediction = np.load(pred_file)
     
-    # Find corresponding target
-    target_file = target_dir / f'{date}.npy'
+    # Try to load normalized target saved by evaluator first
+    norm_target_file = pred_file.parent / f'target_{date}.npy'
     
-    if not target_file.exists():
-        raise FileNotFoundError(f"Target file not found: {target_file}")
-    
-    target = np.load(target_file)
-    
-    # Use first channel if multi-channel
-    if target.ndim == 3:
-        target = target[0]
+    if norm_target_file.exists():
+        target = np.load(norm_target_file)
+    elif target_dir:
+        # Fallback to raw target if normalized one not found
+        target_file = target_dir / f'{date}.npy'
+        if not target_file.exists():
+            raise FileNotFoundError(f"Target file not found: {target_file}")
+        target = np.load(target_file)
+        # Use first channel if multi-channel
+        if target.ndim == 3:
+            target = target[0]
+    else:
+        raise FileNotFoundError(f"Could not find target for {date}")
     
     return prediction, target, date
 
@@ -51,7 +56,9 @@ def load_image_pair(pred_file: Path, target_dir: Path) -> Tuple[np.ndarray, np.n
 def create_comparison_plot(
     samples: List[Tuple[np.ndarray, np.ndarray, str]],
     output_path: Path,
-    figsize: Tuple[int, int] = (15, 10)
+    figsize: Tuple[int, int] = (20, 15),
+    denormalize: bool = False,
+    norm_stats: dict = None
 ):
     """
     Create a comparison plot with predictions, targets, and errors.
@@ -60,9 +67,12 @@ def create_comparison_plot(
         samples: List of (prediction, target, date) tuples
         output_path: Path to save the figure
         figsize: Figure size
+        denormalize: Whether to denormalize the data
+        norm_stats: Dictionary containing normalization statistics (mean, std, min, max)
     """
     n_samples = len(samples)
-    fig, axes = plt.subplots(n_samples, 4, figsize=figsize)
+    # Increase figure size per sample
+    fig, axes = plt.subplots(n_samples, 4, figsize=(figsize[0], figsize[1] * n_samples / 2))
     
     if n_samples == 1:
         axes = axes.reshape(1, -1)
@@ -75,41 +85,61 @@ def create_comparison_plot(
                           pred.shape[1] / target.shape[1])
             target = zoom(target, zoom_factors, order=1)
         
-        # Calculate error
-        error = np.abs(pred - target)
+        # Denormalize if requested
+        pred_orig = pred.copy()
+        target_orig = target.copy()
+        
+        if denormalize and norm_stats:
+            if 'min' in norm_stats and 'max' in norm_stats:
+                # MinMax denormalization
+                pred_denorm = pred * (norm_stats['max'] - norm_stats['min']) + norm_stats['min']
+                target_denorm = target * (norm_stats['max'] - norm_stats['min']) + norm_stats['min']
+            elif 'mean' in norm_stats and 'std' in norm_stats:
+                # Z-score denormalization
+                pred_denorm = pred * norm_stats['std'] + norm_stats['mean']
+                target_denorm = target * norm_stats['std'] + norm_stats['mean']
+            else:
+                pred_denorm = pred
+                target_denorm = target
+        else:
+            pred_denorm = pred
+            target_denorm = target
+
+        # Calculate error on denormalized data
+        error = np.abs(pred_denorm - target_denorm)
         
         # Determine common color scale for pred and target
-        vmin = min(pred.min(), target.min())
-        vmax = max(pred.max(), target.max())
+        vmin = min(pred_denorm.min(), target_denorm.min())
+        vmax = max(pred_denorm.max(), target_denorm.max())
         
         # Plot prediction
-        im1 = axes[i, 0].imshow(pred, cmap='viridis', vmin=vmin, vmax=vmax)
-        axes[i, 0].set_title(f'Prediction\n{date}')
+        im1 = axes[i, 0].imshow(pred_denorm, cmap='viridis', vmin=vmin, vmax=vmax)
+        axes[i, 0].set_title(f'Prediction (Denorm)\n{date}', fontsize=12)
         axes[i, 0].axis('off')
         plt.colorbar(im1, ax=axes[i, 0], fraction=0.046)
         
         # Plot target
-        im2 = axes[i, 1].imshow(target, cmap='viridis', vmin=vmin, vmax=vmax)
-        axes[i, 1].set_title(f'Target\n{date}')
+        im2 = axes[i, 1].imshow(target_denorm, cmap='viridis', vmin=vmin, vmax=vmax)
+        axes[i, 1].set_title(f'Target (Denorm)\n{date}', fontsize=12)
         axes[i, 1].axis('off')
         plt.colorbar(im2, ax=axes[i, 1], fraction=0.046)
         
         # Plot absolute error
         im3 = axes[i, 2].imshow(error, cmap='Reds')
-        axes[i, 2].set_title(f'Absolute Error\n{date}')
+        axes[i, 2].set_title(f'Absolute Error\n{date}', fontsize=12)
         axes[i, 2].axis('off')
         plt.colorbar(im3, ax=axes[i, 2], fraction=0.046)
         
         # Plot histogram comparison
-        axes[i, 3].hist(pred.flatten(), bins=50, alpha=0.5, label='Prediction', density=True)
-        axes[i, 3].hist(target.flatten(), bins=50, alpha=0.5, label='Target', density=True)
-        axes[i, 3].set_title(f'Distribution\n{date}')
+        axes[i, 3].hist(pred_denorm.flatten(), bins=50, alpha=0.5, label='Prediction', density=True)
+        axes[i, 3].hist(target_denorm.flatten(), bins=50, alpha=0.5, label='Target', density=True)
+        axes[i, 3].set_title(f'Distribution (Denorm)\n{date}', fontsize=12)
         axes[i, 3].legend()
         axes[i, 3].set_xlabel('Value')
         axes[i, 3].set_ylabel('Density')
     
     plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight') # Increased DPI
     print(f"Visualization saved to {output_path}")
     plt.close()
 
@@ -200,12 +230,60 @@ def main():
         default=42,
         help='Random seed for reproducibility'
     )
+    parser.add_argument(
+        '--denormalize',
+        action='store_true',
+        help='Denormalize predictions using stats from dataset'
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='data/config.yaml',
+        help='Path to config file (needed for denormalization)'
+    )
     
     args = parser.parse_args()
     
     # Set random seed
     random.seed(args.seed)
     np.random.seed(args.seed)
+    
+    # Load config and compute stats if denormalization is requested
+    norm_stats = {}
+    if args.denormalize:
+        try:
+            from src.utils.config_loader import ConfigLoader
+            from src.dataset import StreamflowDataset
+            
+            config = ConfigLoader.load(args.config)
+            # Initialize dataset to compute stats
+            # We only need the stats, so we can use a dummy dataset or just initialize it
+            # Note: This might take a moment as it computes stats over the dataset
+            print("Computing dataset statistics for denormalization...")
+            dataset = StreamflowDataset(
+                image_dir=config['data']['image_dir'],
+                station_dir=config['data']['station_dir'],
+                config=config,
+                normalize=True
+            )
+            
+            if config['data'].get('normalization_type', 'z_score') == 'minmax':
+                norm_stats = {
+                    'min': dataset.image_min,
+                    'max': dataset.image_max
+                }
+                print(f"Loaded MinMax stats: min={norm_stats['min']:.4f}, max={norm_stats['max']:.4f}")
+            else:
+                norm_stats = {
+                    'mean': dataset.image_mean,
+                    'std': dataset.image_std
+                }
+                print(f"Loaded Z-score stats: mean={norm_stats['mean']:.4f}, std={norm_stats['std']:.4f}")
+                
+        except Exception as e:
+            print(f"Warning: Failed to load config or compute stats: {e}")
+            print("Proceeding without denormalization.")
+            args.denormalize = False
     
     # Paths
     output_dir = Path(args.output_dir)
@@ -270,7 +348,12 @@ def main():
     
     # Create comparison plot
     comparison_path = output_dir / 'visualization_comparison.png'
-    create_comparison_plot(samples, comparison_path)
+    create_comparison_plot(
+        samples, 
+        comparison_path, 
+        denormalize=args.denormalize,
+        norm_stats=norm_stats
+    )
     
     # Create statistics plot
     stats_path = output_dir / 'visualization_statistics.png'
