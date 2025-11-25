@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from src.train import main as train_main
+from src.train import run_training
 from src.evaluate import main as eval_main
 
 
@@ -58,10 +58,16 @@ def main():
         help='Path to config file'
     )
     train_parser.add_argument(
-        '--model',
+        '--resume',
         type=str,
         default=None,
-        help='Path to pre-trained model (optional)'
+        help='Path to checkpoint to resume from'
+    )
+    train_parser.add_argument(
+        '--epochs',
+        type=int,
+        default=None,
+        help='Override number of epochs'
     )
     
     # Evaluate command
@@ -102,7 +108,7 @@ def main():
     
     elif args.command == 'train':
         print(f"Training model from config: {args.config}")
-        train_main(args.config)
+        run_training(args.config, args.resume, args.epochs)
     
     elif args.command == 'evaluate':
         print(f"Evaluating model: {args.model}")

@@ -241,6 +241,18 @@ def main():
         default='data/config.yaml',
         help='Path to config file (needed for denormalization)'
     )
+    parser.add_argument(
+        '--date',
+        type=str,
+        default=None,
+        help='Specific date to visualize (YYYYMMDD)'
+    )
+    parser.add_argument(
+        '--model',
+        type=str,
+        default=None,
+        help='Path to model file (unused, for compatibility)'
+    )
     
     args = parser.parse_args()
     
@@ -255,7 +267,7 @@ def main():
             from src.utils.config_loader import ConfigLoader
             from src.dataset import StreamflowDataset
             
-            config = ConfigLoader.load(args.config)
+            config = ConfigLoader.load_config(args.config)
             # Initialize dataset to compute stats
             # We only need the stats, so we can use a dummy dataset or just initialize it
             # Note: This might take a moment as it computes stats over the dataset
@@ -278,7 +290,11 @@ def main():
                     'mean': dataset.image_mean,
                     'std': dataset.image_std
                 }
-                print(f"Loaded Z-score stats: mean={norm_stats['mean']:.4f}, std={norm_stats['std']:.4f}")
+                # Handle per-channel stats for printing
+                if isinstance(norm_stats['mean'], (list, np.ndarray)):
+                     print(f"Loaded Z-score stats (per-channel)")
+                else:
+                     print(f"Loaded Z-score stats: mean={norm_stats['mean']:.4f}, std={norm_stats['std']:.4f}")
                 
         except Exception as e:
             print(f"Warning: Failed to load config or compute stats: {e}")
@@ -317,18 +333,26 @@ def main():
     print(f"Using target directory: {target_dir}")
     print(f"Using prediction directory: {pred_dir}")
     
-    # Get all prediction files
-    pred_files = list(pred_dir.glob('pred_*.npy'))
+    # Get prediction files
+    if args.date:
+        pred_files = list(pred_dir.glob(f'pred_{args.date}.npy'))
+        if not pred_files:
+            print(f"Error: No prediction found for date {args.date}")
+            return
+        print(f"Visualizing specific date: {args.date}")
+    else:
+        pred_files = list(pred_dir.glob('pred_*.npy'))
+        if len(pred_files) == 0:
+            print(f"Error: No prediction files found in {pred_dir}")
+            return
+        print(f"Found {len(pred_files)} prediction files")
     
-    if len(pred_files) == 0:
-        print(f"Error: No prediction files found in {pred_dir}")
-        return
-    
-    print(f"Found {len(pred_files)} prediction files")
-    
-    # Randomly sample
-    num_samples = min(args.num_samples, len(pred_files))
-    sampled_files = random.sample(pred_files, num_samples)
+    # Sample files
+    if args.date:
+        sampled_files = pred_files
+    else:
+        num_samples = min(args.num_samples, len(pred_files))
+        sampled_files = random.sample(pred_files, num_samples)
     
     # Load samples
     samples = []

@@ -383,25 +383,23 @@ class Trainer:
         self.logger.info("Training complete!")
 
 
-def main():
+def run_training(config_path: str, resume_path: str = None, epochs: int = None):
     """
-    Main training function.
+    Run training programmatically.
+    
+    Args:
+        config_path: Path to config file
+        resume_path: Path to checkpoint to resume from
+        epochs: Override number of epochs
     """
-    import argparse
-    parser = argparse.ArgumentParser(description='Train Streamflow Prediction Model')
-    parser.add_argument('--config', type=str, default='./data/config.yaml', help='Path to config file')
-    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
-    parser.add_argument('--epochs', type=int, default=None, help='Override number of epochs from config')
-    args = parser.parse_args()
-
     # Load configuration
-    config = ConfigLoader.load_config(args.config)
+    config = ConfigLoader.load_config(config_path)
     
     # Override epochs if provided
-    if args.epochs is not None:
+    if epochs is not None:
         if 'train' not in config:
             config['train'] = {}
-        config['train']['num_epochs'] = args.epochs
+        config['train']['num_epochs'] = epochs
     
     # Create dataset
     image_dir = config.get('data', {}).get('image_dir', './data/images')
@@ -415,11 +413,25 @@ def main():
     )
     
     # Initialize trainer
-    trainer = Trainer(config, model_path=args.resume)
+    trainer = Trainer(config, model_path=resume_path)
     
     # Train
     num_epochs = config.get('train', {}).get('num_epochs', 100)
     trainer.train(dataset, num_epochs=num_epochs)
+
+
+def main():
+    """
+    Main training function.
+    """
+    import argparse
+    parser = argparse.ArgumentParser(description='Train Streamflow Prediction Model')
+    parser.add_argument('--config', type=str, default='./data/config.yaml', help='Path to config file')
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
+    parser.add_argument('--epochs', type=int, default=None, help='Override number of epochs from config')
+    args = parser.parse_args()
+
+    run_training(args.config, args.resume, args.epochs)
 
 
 if __name__ == '__main__':
