@@ -40,6 +40,7 @@ class StreamflowDataset(Dataset):
         self.upscale_factor = config.get('data', {}).get('upscale_factor', 2)
         self.region = config.get('data', {}).get('region', [100, 110, 25, 35])
         self.resolution = config.get('data', {}).get('resolution', 0.05)
+        self.flow_threshold = config.get('data', {}).get('flow_threshold', 0.1)
         # Desired input image size, can be single int or [H, W]
         img_size_cfg = config.get('data', {}).get('image_size', [128, 128])
         if isinstance(img_size_cfg, int):
