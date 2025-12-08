@@ -10,8 +10,8 @@ except Exception as e:
     print("[FATAL] xarray import failed:", e)
     sys.exit(1)
 
-DEFAULT_ERA5_DIR = "/mnt/d/store/TTF/ERA5"
-DEFAULT_GLOFAS_DIR = "/mnt/d/store/TTF/GLOFAS"
+DEFAULT_ERA5_DIR = "/mnt/d/Store/TTF/ERA5"
+DEFAULT_GLOFAS_DIR = "/mnt/d/Store/TTF/GLOFAS"
 
 def summarize_nc(path: str, max_vars: int = 8):
     print(f"\n=== Inspect: {path} ===")

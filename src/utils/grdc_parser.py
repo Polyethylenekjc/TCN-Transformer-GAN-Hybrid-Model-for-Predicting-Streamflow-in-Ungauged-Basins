@@ -3,6 +3,11 @@ import re
 from typing import Dict, List, Tuple
 import pandas as pd
 
+try:
+    from rich.progress import track
+except ImportError:
+    def track(iter, description=""):
+        return iter
 
 HEADER_PATTERN = re.compile(r"^#\s*([^:]+):\s*(.*)$")
 
@@ -91,9 +96,9 @@ def load_grdc_directory(dir_path: str) -> List[Dict]:
     where df has columns [timestamp, runoff].
     """
     stations: List[Dict] = []
-    for fn in sorted(os.listdir(dir_path)):
-        if not fn.lower().endswith('.txt'):
-            continue
+    files = [fn for fn in sorted(os.listdir(dir_path)) if fn.lower().endswith('.txt')]
+    
+    for fn in track(files, description="Parsing GRDC files...", total=len(files)):
         full = os.path.join(dir_path, fn)
         try:
             meta, df = parse_grdc_file(full)

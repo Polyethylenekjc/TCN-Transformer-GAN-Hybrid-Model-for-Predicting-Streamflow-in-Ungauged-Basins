@@ -305,7 +305,7 @@ def main():
         # Try to infer from common locations
         possible_dirs = [
             Path('./data/images'),
-            Path('/mnt/d/store/TTF/images'),
+            Path('/mnt/d/Store/TTF/images'),
         ]
         image_dir = None
         for pdir in possible_dirs:

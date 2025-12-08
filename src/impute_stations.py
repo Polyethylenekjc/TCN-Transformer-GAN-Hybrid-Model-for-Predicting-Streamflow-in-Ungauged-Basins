@@ -22,7 +22,14 @@ from src.utils.glofas_station_features import (
     list_available_dates,
     extract_glofas_series,
     add_doy_features,
+    lonlat_to_pixel,
 )
+try:
+    from rich.progress import track
+except ImportError:
+    def track(iter, description=""):
+        print(description)
+        return iter
 
 
 @dataclass
@@ -127,11 +134,52 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
         raise RuntimeError("No stations within the configured region.")
 
     # 2) Build per-station frames and features
-    per_station: List[Dict] = []
-    for si, s in enumerate(stations):
+    print(f"[IMPUTE] Pre-calculating pixel coordinates for {len(stations)} stations...")
+    station_pixels = []
+    for s in stations:
         lon, lat = float(s['lon']), float(s['lat'])
-        print(f"[IMPUTE] Extracting GloFAS for station {si+1}/{len(stations)}: id={s.get('id')} name={s.get('name')} lon={lon} lat={lat}")
-        glofas = extract_glofas_series(image_dir, dates, lon, lat, region, (img_h, img_w), kernel_size=kernel_size)
+        px, py = lonlat_to_pixel(lon, lat, region, (img_h, img_w))
+        station_pixels.append((px, py))
+
+    print(f"[IMPUTE] Extracting GloFAS data for all stations across {len(dates)} dates...")
+    # Shape: (num_dates, num_stations)
+    all_glofas_values = np.full((len(dates), len(stations)), np.nan, dtype=np.float32)
+    
+    half = max(0, kernel_size // 2)
+    
+    for di, d in track(enumerate(dates), description="Extracting GloFAS Data...", total=len(dates)):
+        path = Path(image_dir) / f"{d}.npy"
+        if not path.exists():
+            continue
+        try:
+            arr = np.load(path)
+        except Exception:
+            continue
+            
+        if arr.ndim == 2:
+            ch0 = arr
+        else:
+            ch0 = arr[0]
+            
+        H, W = ch0.shape
+        
+        for si, (px, py) in enumerate(station_pixels):
+            y0 = max(0, py - half)
+            y1 = min(H, py + half + 1)
+            x0 = max(0, px - half)
+            x1 = min(W, px + half + 1)
+            patch = ch0[y0:y1, x0:x1]
+            if patch.size > 0:
+                all_glofas_values[di, si] = float(np.nanmean(patch))
+
+    per_station: List[Dict] = []
+    if use_doy:
+        doy_sin, doy_cos = add_doy_features(dates)
+
+    for si, s in track(enumerate(stations), description="Building DataFrames...", total=len(stations)):
+        lon, lat = float(s['lon']), float(s['lat'])
+        # print(f"[IMPUTE] Building dataframe for station {si+1}/{len(stations)}")
+        
         df = pd.DataFrame({'timestamp': dates})
         # merge observed runoff
         obs = s['df'].copy()
@@ -139,11 +187,10 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
         df = df.merge(obs, on='timestamp', how='left')  # adds 'runoff'
         df['lon'] = lon
         df['lat'] = lat
-        df['glofas'] = glofas.values
+        df['glofas'] = all_glofas_values[:, si]
         if use_doy:
-            sin, cos = add_doy_features(dates)
-            df['doy_sin'] = sin
-            df['doy_cos'] = cos
+            df['doy_sin'] = doy_sin
+            df['doy_cos'] = doy_cos
         per_station.append({**s, 'frame': df})
 
     # 3) Assemble training samples (only where runoff observed)
@@ -152,7 +199,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
     all_X = []
     all_y = []
     all_indices = []  # (station_idx, t)
-    for si, s in enumerate(per_station):
+    for si, s in track(enumerate(per_station), description="Assembling Training Data...", total=len(per_station)):
         df = s['frame']
         feats = df[feat_cols].to_numpy(dtype=np.float32)
         seqs = build_sequences(feats, window)
@@ -210,7 +257,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
         for i in range(0, len(Xa), bs):
             yield Xa[i:i+bs], ya[i:i+bs]
 
-    for epoch in range(num_epochs):
+    for epoch in track(range(num_epochs), description="Training LSTM..."):
         model.train()
         tr_loss = 0.0
         for bx, by in batches(Xtr, ytr, batch_size):
@@ -229,7 +276,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
             pv = model(_to_t(Xva))
             vl = float(loss_fn(pv, _to_t(yva)).item())
 
-        print(f"[IMPUTE][Epoch {epoch+1:03d}] train_loss={tr_loss:.6f} val_loss={vl:.6f}")
+        # print(f"[IMPUTE][Epoch {epoch+1:03d}] train_loss={tr_loss:.6f} val_loss={vl:.6f}")
 
         if vl < best_val:
             best_val = vl
@@ -238,6 +285,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
         else:
             bad += 1
         if bad >= patience:
+            print(f"Early stopping at epoch {epoch+1}")
             break
 
     if best_state is not None:
@@ -246,7 +294,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
 
     # 5) Inference and export per station
     report: Dict[str, Dict] = {}
-    for si, s in enumerate(per_station):
+    for si, s in track(enumerate(per_station), description="Imputing & Saving...", total=len(per_station)):
         df = s['frame'].copy()
         feats = df[feat_cols].to_numpy(dtype=np.float32)
         seqs_all = build_sequences(feats, window)
@@ -265,7 +313,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
         # columns: timestamp, lon, lat, runoff
         out_csv = Path(station_dir) / f"station_{si:02d}.csv"
         df[['timestamp', 'lon', 'lat', 'runoff', 'is_imputed', 'source']].to_csv(out_csv, index=False)
-        print(f"[IMPUTE] Saved station CSV: {out_csv}  (imputed {int(is_nan.sum())} days)")
+        # print(f"[IMPUTE] Saved station CSV: {out_csv}  (imputed {int(is_nan.sum())} days)")
 
         # station metrics (only where observation exists in validation slice for this station)
         obs_mask = s['frame']['runoff'].notna().to_numpy()
@@ -305,7 +353,7 @@ def run_imputation(origin_dir: str, cfg_path: str, use_doy: bool = True, kernel_
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Impute station runoff using GloFAS (channel 0) + LSTM')
-    parser.add_argument('--origin-dir', type=str, default='/mnt/d/store/TTF/stations_origin', help='Directory of raw GRDC .txt files')
+    parser.add_argument('--origin-dir', type=str, default='/mnt/d/Store/TTF/stations_origin', help='Directory of raw GRDC .txt files')
     parser.add_argument('--config', type=str, default='data/config.yaml', help='Path to YAML config')
     parser.add_argument('--kernel-size', type=int, default=3, help='Kernel size for neighborhood average in GloFAS channel')
     parser.add_argument('--no-doy', action='store_true', help='Disable day-of-year sin/cos features')
