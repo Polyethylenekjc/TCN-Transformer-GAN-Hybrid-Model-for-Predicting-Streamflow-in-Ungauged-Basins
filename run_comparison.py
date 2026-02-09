@@ -726,7 +726,7 @@ def _log_per_station(logger, model_name: str, ps_metrics: pd.DataFrame):
 def main():
     parser = argparse.ArgumentParser(
         description='对比实验: LSTM / BP / Attention-GRU vs 主模型 (CNN-Transformer)')
-    parser.add_argument('--config', type=str, default='./data/config.yaml')
+    parser.add_argument('--config', type=str, default='./data/config_comparison.yaml')
     parser.add_argument('--main-model', type=str, default=None,
                         help='主模型 checkpoint 路径 (CNN-Transformer)')
     parser.add_argument('--predictions-dir', type=str, default='./output/predictions',

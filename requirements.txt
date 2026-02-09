@@ -12,5 +12,9 @@ cdsapi>=0.6.1
 scipy>=1.10.0
 cftime>=1.6.2
 
+# Explainability
+shap>=0.42.1
+lime>=0.2.0.1
+
 # For shapefile export of annual-mean runoff
 pyshp>=2.3.1

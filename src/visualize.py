@@ -242,6 +242,188 @@ def _compute_station_statistics(
     return pd.DataFrame.from_records(records)
 
 
+def plot_station_model_fit_grid(
+    detail_csv_path: str,
+    metrics_csv_path: str,
+    output_path: str,
+):
+    """绘制 4×4 拟合散点图：
+
+    - 行：站点（按 CSV 中出现顺序）
+    - 列：模型（按 CSV 中出现顺序）
+    - 子图内容：该站点-模型下的观测值 vs 预测值散点图
+      * 仅显示拟合点、y=x 参考线与 MSE 标注
+      * 不使用子图标题，仅在左下角标注 (a)、(b)...
+    """
+
+    _set_chinese_font()
+
+    detail_df = pd.read_csv(detail_csv_path)
+    metrics_df = pd.read_csv(metrics_csv_path)
+
+    # 保证包含所需列
+    required_detail_cols = {"model", "station_id", "actual_runoff", "predicted_runoff"}
+    if not required_detail_cols.issubset(detail_df.columns):
+        raise ValueError(f"detail CSV 缺少必要列: {required_detail_cols - set(detail_df.columns)}")
+
+    required_metric_cols = {"model", "station_id", "MSE"}
+    if not required_metric_cols.issubset(metrics_df.columns):
+        raise ValueError(f"metrics CSV 缺少必要列: {required_metric_cols - set(metrics_df.columns)}")
+
+    # 模型和站点顺序：按 metrics CSV 首次出现的顺序
+    models = list(dict.fromkeys(metrics_df["model"].tolist()))
+    stations = list(dict.fromkeys(metrics_df["station_id"].tolist()))
+
+    n_rows = len(stations)
+    n_cols = len(models)
+    if n_rows == 0 or n_cols == 0:
+        raise ValueError("在 metrics CSV 中未找到有效的模型或站点信息")
+
+    # 不同模型不同颜色（全图统一配色）
+    default_colors = [
+        "#1f77b4",  # 蓝
+        "#ff7f0e",  # 橙
+        "#2ca02c",  # 绿
+        "#d62728",  # 红
+        "#9467bd",  # 紫
+        "#8c564b",  # 棕
+    ]
+    model_colors: Dict[str, str] = {}
+    for idx, m in enumerate(models):
+        model_colors[m] = default_colors[idx % len(default_colors)]
+
+    # 全局坐标范围，保持 y=x 参考线一致
+    global_min = float(
+        min(detail_df["actual_runoff"].min(), detail_df["predicted_runoff"].min())
+    )
+    global_max = float(
+        max(detail_df["actual_runoff"].max(), detail_df["predicted_runoff"].max())
+    )
+    if not np.isfinite(global_min) or not np.isfinite(global_max):
+        raise ValueError("detail CSV 中 actual_runoff / predicted_runoff 数据异常")
+
+    # 适当放宽一点边界
+    padding = 0.02 * (global_max - global_min)
+    line_min = global_min - padding
+    line_max = global_max + padding
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows), sharex=True, sharey=True)
+    if n_rows == 1 and n_cols == 1:
+        axes = np.array([[axes]])
+    elif n_rows == 1:
+        axes = axes[np.newaxis, :]
+    elif n_cols == 1:
+        axes = axes[:, np.newaxis]
+
+    panel_idx = 0
+
+    for i, station in enumerate(stations):
+        for j, model in enumerate(models):
+            ax = axes[i, j]
+
+            mask = (detail_df["station_id"] == station) & (detail_df["model"] == model)
+            sub_df = detail_df[mask]
+
+            color = model_colors.get(model, "#1f77b4")
+
+            if not sub_df.empty:
+                x = sub_df["actual_runoff"].values.astype(float)
+                y = sub_df["predicted_runoff"].values.astype(float)
+                ax.scatter(x, y, s=8, alpha=0.6, color=color, edgecolors="none")
+
+            # y = x 参考线
+            ax.plot([line_min, line_max], [line_min, line_max], linestyle="--", color="gray", linewidth=1.0)
+
+            ax.set_xlim(line_min, line_max)
+            ax.set_ylim(line_min, line_max)
+            ax.set_aspect("equal", adjustable="box")
+
+            # 只在最左列和最后一行设置坐标轴标签，避免过于拥挤
+            if j == 0:
+                ax.set_ylabel("预测值", fontsize=11)
+            else:
+                ax.set_ylabel("")
+            if i == n_rows - 1:
+                ax.set_xlabel("观测值", fontsize=11)
+            else:
+                ax.set_xlabel("")
+
+            # MSE 标注（子图内左上角）
+            mse_row = metrics_df[(metrics_df["station_id"] == station) & (metrics_df["model"] == model)]
+            if not mse_row.empty:
+                mse_val = float(mse_row["MSE"].iloc[0])
+                ax.text(
+                    0.03,
+                    0.95,
+                    f"MSE = {mse_val:.3f}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=11,
+                )
+
+            # 子图左下角 panel 标注 (a), (b), ...
+            ax.text(
+                0.03,
+                0.03,
+                _panel_label(panel_idx),
+                transform=ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=11,
+            )
+            panel_idx += 1
+
+    # 在图外增加行/列标签（不算子图标题）
+    for j, model in enumerate(models):
+        fig.text(
+            (j + 0.5) / n_cols,
+            0.98,
+            model,
+            ha="center",
+            va="top",
+            fontsize=12,
+            fontweight="bold",
+        )
+
+    for i, station in enumerate(stations):
+        fig.text(
+            0.02,
+            (n_rows - i - 0.5) / n_rows,
+            station,
+            ha="left",
+            va="center",
+            fontsize=12,
+            fontweight="bold",
+            rotation=90,
+        )
+
+    # 全局图例：模型-颜色 对应
+    from matplotlib.lines import Line2D
+
+    legend_handles = [
+        Line2D([0], [0], marker="o", linestyle="", color=color, label=model, markersize=6)
+        for model, color in model_colors.items()
+    ]
+
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.02),
+        ncol=min(len(models), 4),
+        frameon=False,
+        fontsize=11,
+    )
+
+    fig.tight_layout(rect=[0.06, 0.06, 0.98, 0.94])
+
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+    print(f"Saved station-model fit grid figure to {out_path}")
+
+
 def _load_image_pairs(
     pred_dir: Path,
     start_date: datetime,
