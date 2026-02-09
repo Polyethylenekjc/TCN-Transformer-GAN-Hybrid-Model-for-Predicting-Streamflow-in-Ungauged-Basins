@@ -272,24 +272,73 @@ def calculate_metrics(
     
     pred = predictions.detach().cpu().numpy().flatten()
     target = targets.detach().cpu().numpy().flatten()
-    
+
+    # Ensure finite values
+    if not (pred.size and target.size):
+        return {
+            'RMSE': 0.0,
+            'MAE': 0.0,
+            'R2': 0.0,
+            'NSE': 0.0,
+            'MAPE': 0.0,
+            'KGE': 0.0,
+        }
+
+    # Replace NaN/Inf to avoid propagation
+    import numpy as np
+
+    pred = np.nan_to_num(pred, nan=0.0, posinf=0.0, neginf=0.0)
+    target = np.nan_to_num(target, nan=0.0, posinf=0.0, neginf=0.0)
+
     # RMSE
     rmse = ((pred - target) ** 2).mean() ** 0.5
-    
+
     # MAE
-    mae = abs(pred - target).mean()
-    
-    # R²
+    mae = np.abs(pred - target).mean()
+
+    # R² and NSE share the same numerator/denominator
     ss_res = ((target - pred) ** 2).sum()
     ss_tot = ((target - target.mean()) ** 2).sum()
-    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-    
-    # NSE (Nash-Sutcliffe Efficiency)
-    nse = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-    
+    if ss_tot > 0:
+        r2 = 1 - (ss_res / ss_tot)
+        nse = 1 - (ss_res / ss_tot)
+    else:
+        r2 = 0.0
+        nse = 0.0
+
+    # MAPE (Mean Absolute Percentage Error, in %)
+    # Ignore very small targets to avoid division by zero explosion
+    eps = 1e-6
+    mask = np.abs(target) > eps
+    if mask.any():
+        mape = (np.abs((pred[mask] - target[mask]) / target[mask])).mean() * 100.0
+    else:
+        mape = 0.0
+
+    # KGE (Kling-Gupta Efficiency)
+    # KGE = 1 - sqrt( (r-1)^2 + (alpha-1)^2 + (beta-1)^2 )
+    # r: correlation, alpha: std(pred)/std(obs), beta: mean(pred)/mean(obs)
+    try:
+        mu_p = float(pred.mean())
+        mu_o = float(target.mean())
+        std_p = float(pred.std())
+        std_o = float(target.std())
+
+        if std_p > 0 and std_o > 0 and mu_o != 0.0:
+            r = float(np.corrcoef(pred, target)[0, 1])
+            alpha = std_p / std_o
+            beta = mu_p / mu_o
+            kge = 1.0 - float(np.sqrt((r - 1.0) ** 2 + (alpha - 1.0) ** 2 + (beta - 1.0) ** 2))
+        else:
+            kge = 0.0
+    except Exception:
+        kge = 0.0
+
     return {
         'RMSE': float(rmse),
         'MAE': float(mae),
         'R2': float(r2),
-        'NSE': float(nse)
+        'NSE': float(nse),
+        'MAPE': float(mape),
+        'KGE': float(kge),
     }

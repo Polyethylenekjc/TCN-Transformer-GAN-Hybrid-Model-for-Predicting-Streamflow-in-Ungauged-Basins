@@ -26,7 +26,7 @@ def get_cds_client(service: str) -> cdsapi.Client:
 
 
 # ========== 区域/路径配置 ==========
-OUTPUT_ROOT = "/mnt/d/Store/TTF/Africa"
+OUTPUT_ROOT = "/mnt/d/Store/TTF/SouthAsia"
 ERA5_DIR = os.path.join(OUTPUT_ROOT, "ERA5")
 GLOFAS_DIR = os.path.join(OUTPUT_ROOT, "GLOFAS")
 IMAGES_DIR = os.path.join(OUTPUT_ROOT, "images")
@@ -39,7 +39,14 @@ os.makedirs(STATIONS_DIR, exist_ok=True)
 # Africa region (N, W, S, E) per CDS convention
 # Exact 0.1° grid coverage for 720x680:
 # latMin=-35, latMax=37, lonMin=-17, lonMax=51
-CDS_AREA_AFRICA = [37, -17, -35, 51]
+# CDS_AREA_AFRICA = [37, -17, -35, 51]
+
+# Pakistan + India region (N, W, S, E) per CDS convention
+# Exact 0.1° grid coverage for 256×256:
+# latMin=7.0, latMax=32.6, lonMin=77.5, lonMax=103.1
+CDS_AREA_SEASIA = [32.6, 77.5, 7.0, 103.1]
+
+
 
 
 # ========== 1. 下载 GLOFAS ==========
@@ -62,7 +69,7 @@ def download_glofas(year: int):
         "hday": [f"{d:02d}" for d in range(1, 32)],
         "data_format": "netcdf",
         "download_format": "zip",
-        "area": CDS_AREA_AFRICA,  # [N, W, S, E]
+        "area": CDS_AREA_SEASIA,  # [N, W, S, E]
     }
 
     print(f"[GLOFAS] Downloading {year} ...")
@@ -120,7 +127,7 @@ def download_era5(year: int, month: int, hour: str = "12:00"):
         "time": [hour],  # 每日一次，可调整
         "data_format": "netcdf",
         "download_format": "unarchived",
-        "area": CDS_AREA_AFRICA,  # [N, W, S, E]
+        "area": CDS_AREA_SEASIA,  # [N, W, S, E]
     }
     client.retrieve(dataset, request).download(target=target)
 
@@ -128,10 +135,11 @@ def download_era5(year: int, month: int, hour: str = "12:00"):
 # ========== 3. 合并为多通道 NPY ==========
 def align_and_save_npy(years: List[int],
     out_dir: str = IMAGES_DIR,
-    region: List[float] = [-17, 51, -35, 37],
+    # region: [lon_min, lon_max, lat_min, lat_max]
+    region: List[float] = [77.5, 103.1, 7.0, 32.6],
     resolution: float = 0.1,
-    grid_h: int = 720,
-    grid_w: int = 680):
+    grid_h: int = 256,
+    grid_w: int = 256):
     """
         读取 ERA5 与 GLOFAS NetCDF，裁剪到区域并按日期合并为 (C,H,W) NPY。
         通道顺序（10 通道）：

@@ -17,9 +17,11 @@ try:
 except Exception:
     RICH_AVAILABLE = False
 
+from torch.utils.data import DataLoader as TorchDataLoader
+
 from src.model import StreamflowPredictionModel, MultiTaskStreamflowModel
 from src.model.gan import PatchDiscriminator, GANLoss
-from src.dataset import StreamflowDataset, DataLoader
+from src.dataset import StreamflowDataset
 from src.loss import CombinedLoss, calculate_metrics
 from src.utils.config_loader import ConfigLoader
 
@@ -149,7 +151,7 @@ class Trainer:
                 f"GPU Memory - Allocated: {allocated:.1f}MB, Reserved: {reserved:.1f}MB"
             )
     
-    def train_epoch(self, dataloader: DataLoader) -> Dict[str, float]:
+    def train_epoch(self, dataloader) -> Dict[str, float]:
         """
         Train for one epoch.
         
@@ -172,8 +174,8 @@ class Trainer:
         # When using external Progress (from train), train_epoch will receive progress and task id
 
         for batch_idx, batch in enumerate(dataloader):
-            images = batch['images'].to(self.device)
-            output_image = batch['output_image'].to(self.device)
+            images = batch['images'].to(self.device, non_blocking=True)
+            output_image = batch['output_image'].to(self.device, non_blocking=True)
             
             # Move station data to device
             station_positions = [
@@ -302,7 +304,7 @@ class Trainer:
             'station_loss': total_stn_loss / num_batches
         }
     
-    def validate(self, dataloader: DataLoader) -> Dict[str, float]:
+    def validate(self, dataloader) -> Dict[str, float]:
         """
         Validate model.
         
@@ -321,8 +323,8 @@ class Trainer:
         
         with torch.no_grad():
             for batch in dataloader:
-                images = batch['images'].to(self.device)
-                output_image = batch['output_image'].to(self.device)
+                images = batch['images'].to(self.device, non_blocking=True)
+                output_image = batch['output_image'].to(self.device, non_blocking=True)
                 
                 # Forward pass
                 predictions = self.model(images)
@@ -369,17 +371,45 @@ class Trainer:
             num_epochs: Number of epochs
             val_dataset: Validation dataset (optional)
         """
-        train_loader = DataLoader(
+        # Use native PyTorch DataLoader with multi-worker + pinned memory
+        batch_size = self.config.get('train', {}).get('batch_size', 4)
+        num_workers = self.config.get('train', {}).get('num_workers', 4)
+        pin_memory = self.device.type == 'cuda'
+
+        def _collate_fn(batch):
+            # batch is a list of samples from StreamflowDataset
+            images = torch.stack([b['images'] for b in batch], dim=0)
+            outputs = torch.stack([b['output_image'] for b in batch], dim=0)
+            stations = [b['stations'] for b in batch]
+            station_positions = [b['station_positions'] for b in batch]
+            return {
+                'images': images,
+                'output_image': outputs,
+                'stations': stations,
+                'station_positions': station_positions
+            }
+
+        train_loader = TorchDataLoader(
             train_dataset,
-            batch_size=self.config.get('train', {}).get('batch_size', 4),
-            shuffle=True
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            collate_fn=_collate_fn,
+            persistent_workers=(num_workers > 0),
+            prefetch_factor=2 if num_workers > 0 else None,
         )
-        
+
         if val_dataset is not None:
-            val_loader = DataLoader(
+            val_loader = TorchDataLoader(
                 val_dataset,
-                batch_size=self.config.get('train', {}).get('batch_size', 4),
-                shuffle=False
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                collate_fn=_collate_fn,
+                persistent_workers=(num_workers > 0),
+                prefetch_factor=2 if num_workers > 0 else None,
             )
         else:
             val_loader = None

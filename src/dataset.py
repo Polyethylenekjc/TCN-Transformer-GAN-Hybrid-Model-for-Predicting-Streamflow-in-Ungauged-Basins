@@ -76,7 +76,10 @@ class StreamflowDataset(Dataset):
         self.runoff_max = None
         
         if self.normalize:
-            self._compute_statistics()
+            # Try loading cached statistics first to speed up dataset creation
+            if not self._load_stats_from_cache():
+                self._compute_statistics()
+                self._save_stats_to_cache()
     
     def _load_stations(self) -> Dict[str, pd.DataFrame]:
         """Load station data from CSV files."""
@@ -113,6 +116,77 @@ class StreamflowDataset(Dataset):
     def _mask_path_for(self, npy_path: Path) -> Path:
         """Return expected mask path for a given npy file."""
         return npy_path.with_name(npy_path.stem + '_mask.npy')
+
+    # ---- Statistics caching helpers -------------------------------------------------
+
+    def _stats_cache_path(self) -> Path:
+        """Return path for cached statistics file.
+
+        We store stats under data.output_dir to keep them tied to a given config.
+        """
+        output_dir = self.config.get('data', {}).get('output_dir', './output')
+        cache_dir = Path(output_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / 'stats_cache.npz'
+
+    def _load_stats_from_cache(self) -> bool:
+        """Load normalization statistics from cache if available and consistent.
+
+        Returns True if cache was successfully loaded, False otherwise.
+        """
+        cache_path = self._stats_cache_path()
+        if not cache_path.exists():
+            return False
+
+        try:
+            data = np.load(cache_path, allow_pickle=True)
+
+            cached_files = list(data.get('image_files', []))
+            current_files = [str(p) for p in self.image_files]
+            if cached_files != current_files:
+                return False
+
+            cached_img_size = data.get('image_size', None)
+            if cached_img_size is not None:
+                cached_h, cached_w = cached_img_size
+                if int(cached_h) != self.input_height or int(cached_w) != self.input_width:
+                    return False
+
+            # Load statistics
+            self.num_channels = int(data['num_channels'])
+            self.image_mean = data['image_mean']
+            self.image_std = data['image_std']
+            self.image_min = data['image_min']
+            self.image_max = data['image_max']
+            self.runoff_mean = float(data['runoff_mean'])
+            self.runoff_std = float(data['runoff_std'])
+            self.runoff_min = float(data['runoff_min'])
+            self.runoff_max = float(data['runoff_max'])
+            return True
+        except Exception as e:
+            print(f"Warning: failed to load stats cache from {cache_path}: {e}")
+            return False
+
+    def _save_stats_to_cache(self) -> None:
+        """Save normalization statistics to cache for future runs."""
+        cache_path = self._stats_cache_path()
+        try:
+            np.savez(
+                cache_path,
+                image_files=[str(p) for p in self.image_files],
+                image_size=[self.input_height, self.input_width],
+                num_channels=self.num_channels,
+                image_mean=self.image_mean,
+                image_std=self.image_std,
+                image_min=self.image_min,
+                image_max=self.image_max,
+                runoff_mean=self.runoff_mean,
+                runoff_std=self.runoff_std,
+                runoff_min=self.runoff_min,
+                runoff_max=self.runoff_max,
+            )
+        except Exception as e:
+            print(f"Warning: failed to save stats cache to {cache_path}: {e}")
 
     def _compute_statistics(self) -> None:
         """Compute mean and std per channel for normalization in a memory-efficient way."""
@@ -437,60 +511,5 @@ class StreamflowDataset(Dataset):
         }
 
 
-class DataLoader:
-    """Custom data loader with batch collation."""
-    
-    def __init__(
-        self,
-        dataset: StreamflowDataset,
-        batch_size: int = 4,
-        shuffle: bool = True,
-        num_workers: int = 0
-    ):
-        """Initialize data loader."""
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.num_workers = num_workers
-        
-        self.indices = list(range(len(dataset)))
-        if shuffle:
-            np.random.shuffle(self.indices)
-    
-    def __iter__(self):
-        """Iterate through batches."""
-        if self.shuffle:
-            np.random.shuffle(self.indices)
-        
-        for batch_start in range(0, len(self.indices), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(self.indices))
-            batch_indices = self.indices[batch_start:batch_end]
-            
-            # Collect samples
-            batch_images = []
-            batch_outputs = []
-            batch_stations = []
-            batch_positions = []
-            
-            for idx in batch_indices:
-                sample = self.dataset[idx]
-                batch_images.append(sample['images'])
-                batch_outputs.append(sample['output_image'])
-                batch_stations.append(sample['stations'])
-                batch_positions.append(sample['station_positions'])
-            
-            # Stack and pad
-            images = torch.stack(batch_images, dim=0)
-            outputs = torch.stack(batch_outputs, dim=0)
-            
-            # Stations may have varying lengths, so we store as list
-            yield {
-                'images': images,
-                'output_image': outputs,
-                'stations': batch_stations,
-                'station_positions': batch_positions
-            }
-    
-    def __len__(self):
-        """Get number of batches."""
-        return (len(self.dataset) + self.batch_size - 1) // self.batch_size
+"""Note: Custom DataLoader removed in favor of native torch.utils.data.DataLoader
+with multi-worker loading, pinned memory, and custom collate_fn defined in train.py."""

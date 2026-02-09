@@ -176,6 +176,10 @@ class Evaluator:
         corr_scores = []
         
         station_results = []
+
+        # For annual-mean runoff map
+        mean_sum_pred = None
+        mean_count = 0
         
         self.logger.info(f"Evaluating on {len(dataset)} samples...")
         
